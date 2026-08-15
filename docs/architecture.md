@@ -39,8 +39,8 @@ If a change breaks one of these it is wrong, regardless of what it improves.
 7. **Resolution is store-first with no second leg.** No fallback to
    configuration or environment. This process's environment is exactly where a
    provider key used to live; a fallback restores the exposure.
-8. **Rotation is one write.** A value rewritten in the store is in use within the
-   TTL — no redeploy, no restart.
+8. **Rotation is one write.** A value rewritten in the store is spent on the
+   next call — no redeploy, no restart.
 
 ---
 
@@ -96,6 +96,27 @@ the ZAP transport, which carries a whole request including headers.
 Not `zip.Call`: the op-call plane forwards the gateway's `X-*` identity
 assertions and nothing else, and those are precisely what a service outside the
 cluster must not believe. A bearer cannot ride it.
+
+Outbound to the store is ZAP too, and it carries credentials across whatever
+sits between this host and the store. Every request on it is a signed envelope,
+which settles who is asking and stops a replay, but a signature is not a
+curtain. The bodies are sealed under an X25519 + ML-KEM-768 session by
+`hanzoai/kms/sdk/go` v1.1.2, whose dial refuses a peer that will not agree one
+and refuses a session that ran X25519 alone — hybrid because a break in the
+curve and a machine that breaks it are two different futures, and a key read
+today is a key stored today.
+
+Refusing is the point. A handshake that fails and carries on is not a weaker
+channel, it is no channel: dropping one message is the whole downgrade, and an
+adversary who can do that gets every secret afterwards in both directions. So
+there is no setting for it, because a setting is a thing an adversary gets to
+influence.
+
+v1.1.2 is published on the forge and verified composing with this build. It is
+not required here yet: the module path resolves through `github.com/hanzoai/kms`,
+which today redirects to an archived repository that cannot take a new tag. When
+that repository exists again, `go get github.com/hanzoai/kms/sdk/go@v1.1.2` is
+the whole of the change, and rows 15 and 16 read alike.
 
 ### Routes
 
@@ -211,9 +232,16 @@ tenant with no key of its own and falls through; a store that **cannot answer**
 is an error that ends the call — an unreachable store must not become a reason to
 look somewhere less guarded.
 
-Resolved values are held for the TTL (default one minute) and no longer. That is
-what makes rotation a store write rather than a deploy, and what makes a replica
-worth deleting rather than investigating: it knows nothing that outlives it.
+A resolved value is held for the call that read it and for nothing else. There
+is no window and no map, so there is nothing for a core dump, a heap profile or
+another tenant's call to reach, and a replica is worth deleting rather than
+investigating: it knows nothing that outlives a request. Reading every time is
+also what makes rotation a store write rather than a deploy.
+
+It cannot be zeroed. The store hands back a `string`, and so does the dialect
+surface it is passed to; Go strings are immutable, so the copies belong to the
+collector. The property that is actually available is the one above — no copy
+outlives its call — and it is the one the code keeps.
 
 ### The gate goes ahead of every route
 
@@ -333,6 +361,8 @@ through our meter, cannot take the credential) · **Low** · **None**.
 | 12 | Compromised store | **Total** | **Total** | Inherent — the store holds everything. Mitigated by keeping it small, admin-scoped for writes, audited per read, and **not co-located with its readers**. |
 | 13 | Vendor-side escalation through the broker | n/a (new) | **None** | No caller supplies a path or a URL. Account, usage and key-management endpoints are unreachable by construction — there is no route that would carry a caller there. |
 | 14 | An entitled-looking caller burning spend | **Total** (no limit) | **Bounded** | Rate limit per principal, meter per call, attribution in every log line. Entitlement itself is not checked — §5. |
+| 15 | On-path adversary on the leg to the store | **Total** — an enrolled key crosses the network as it is written and again on every read | **Bounded** | Every request is an ML-DSA-65 signed envelope carrying a fresh nonce, so it cannot be forged or replayed and a substituted reply is rejected. The bodies themselves are sealed once the client below is required here. |
+| 16 | On-path adversary on the leg to a provider | **Total** if certificates go unverified | **None** | The outbound client belongs to this process and verifies certificates, with no setting that disables it. An acceptance test points a call at a server presenting an unvouched certificate and asserts nothing was sent. |
 
 Net: the design converts *credential theft* into *bounded, observable,
 tenant-scoped spend*. It does not make the credential unreachable to an adversary
@@ -431,11 +461,12 @@ not a signature, so there is nothing to move.
 
 The code says the credential "exists only inside this function". Precisely: it is
 also retained by the dialect object it was passed to, and by any abandoned
-goroutine still holding one (§9). The claim is right in intent and worth tightening
-in fact.
+goroutine still holding one (§9) — both of which end with the call. Nothing
+outlives it: there is no window in which a resolved value is resident, so the
+memory an adversary must catch is the memory of a request in flight.
 
 What bounds it: no interactive access to the host; replacement rather than repair;
-a small surface with no user code, no templating, and no debug route; a short TTL
+a small surface with no user code, no templating, and no debug route; no held credential
 so a replica holds a value briefly; rotation as one store write, so a suspected
 compromise is answered in minutes rather than a multi-vendor scramble; scrubbed
 errors; and a per-principal ceiling so even successful abuse is metered and
@@ -470,7 +501,7 @@ reduction. Not "unstealable".
 | 16 | Any route that returns a credential | none exists |
 | 17 | Logs and error frames grepped for the live credential | no match |
 | 18 | Upstream error quoting the whole credential | scrubbed before it reaches caller or log |
-| 19 | Rotation: new value written to the store, nothing else changed | in use within the TTL; no restart; no failed call |
+| 19 | Rotation: new value written to the store, nothing else changed | spent on the next call; no restart; no failed call |
 | 20 | Post-rotation, replay the old credential against the vendor | rejected — confirms the old value is dead |
 | 21 | Rate limit exceeded for one principal | refused; upstream not called |
 | 22 | Vendor failing repeatedly | circuit opens; calls refused fast rather than each costing a deadline |
