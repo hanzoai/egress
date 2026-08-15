@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // store is a credential store a test controls completely. The seam is the same
@@ -120,7 +119,7 @@ func TestTheTenantsOwnKeyOutranksTheSharedOne(t *testing.T) {
 		userRef(alice, "openai", "default"): "sk-theirs",
 		orgRef(alice, "openai", "default"):  "sk-ours",
 	})
-	key, scope, err := newCustody(s, time.Minute).resolve(context.Background(), alice, "openai", "default")
+	key, scope, err := newCustody(s).resolve(context.Background(), alice, "openai", "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +130,7 @@ func TestTheTenantsOwnKeyOutranksTheSharedOne(t *testing.T) {
 
 func TestTheSharedKeyServesATenantThatBroughtNone(t *testing.T) {
 	s := newStore(map[string]string{orgRef(alice, "openai", "default"): "sk-ours"})
-	key, scope, err := newCustody(s, time.Minute).resolve(context.Background(), alice, "openai", "default")
+	key, scope, err := newCustody(s).resolve(context.Background(), alice, "openai", "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +147,7 @@ func TestAnAbsentCredentialIsRefusedRatherThanFoundElsewhere(t *testing.T) {
 	t.Setenv("OPENAI", "sk-from-the-environment")
 	t.Setenv("openai", "sk-from-the-environment")
 
-	key, scope, err := newCustody(newStore(nil), time.Minute).resolve(context.Background(), alice, "openai", "default")
+	key, scope, err := newCustody(newStore(nil)).resolve(context.Background(), alice, "openai", "default")
 	if !errors.Is(err, ErrNoCredential) {
 		t.Fatalf("err = %v, want ErrNoCredential", err)
 	}
@@ -164,7 +163,7 @@ func TestAStoreThatCannotAnswerEndsTheCall(t *testing.T) {
 	s := newStore(map[string]string{orgRef(alice, "openai", "default"): "sk-ours"})
 	s.fail = errors.New("cek: message authentication failed")
 
-	_, _, err := newCustody(s, time.Minute).resolve(context.Background(), alice, "openai", "default")
+	_, _, err := newCustody(s).resolve(context.Background(), alice, "openai", "default")
 	if err == nil {
 		t.Fatal("a broken store served a call")
 	}
@@ -173,31 +172,26 @@ func TestAStoreThatCannotAnswerEndsTheCall(t *testing.T) {
 	}
 }
 
-func TestACredentialIsHeldOnlyForItsWindow(t *testing.T) {
+// A credential must not outlive the call that read it. There is no window in
+// which one is resident here, so every call reads it again — which is also why
+// a key rewritten in KMS is spent on the next call rather than the next minute.
+func TestACredentialIsNotKeptBetweenCalls(t *testing.T) {
 	s := newStore(map[string]string{userRef(alice, "openai", "default"): "sk-theirs"})
-	c := newCustody(s, 40*time.Millisecond)
+	c := newCustody(s)
 
-	for i := 0; i < 3; i++ {
+	for i := 1; i <= 3; i++ {
 		if _, _, err := c.resolve(context.Background(), alice, "openai", "default"); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if got := s.count(); got != 1 {
-		t.Errorf("%d reads inside the window, want 1", got)
-	}
-
-	time.Sleep(60 * time.Millisecond)
-	if _, _, err := c.resolve(context.Background(), alice, "openai", "default"); err != nil {
-		t.Fatal(err)
-	}
-	if got := s.count(); got != 2 {
-		t.Errorf("%d reads after the window, want 2 — a rotated key would not be picked up", got)
+		if got := s.count(); got != i {
+			t.Fatalf("%d reads after %d calls — a call spent a credential this process was keeping", got, i)
+		}
 	}
 }
 
 func TestEnrollingReplacesWhatWasHeld(t *testing.T) {
 	s := newStore(map[string]string{userRef(alice, "openai", "default"): "sk-old"})
-	c := newCustody(s, time.Hour)
+	c := newCustody(s)
 
 	if key, _, _ := c.resolve(context.Background(), alice, "openai", "default"); key != "sk-old" {
 		t.Fatalf("first resolve = %q", key)
@@ -216,7 +210,7 @@ func TestEnrollingReplacesWhatWasHeld(t *testing.T) {
 
 func TestEnrollingWritesUnderTheEnrollersOwnPath(t *testing.T) {
 	s := newStore(nil)
-	if err := newCustody(s, time.Minute).enroll(context.Background(), alice, "openai", "default", "sk-theirs"); err != nil {
+	if err := newCustody(s).enroll(context.Background(), alice, "openai", "default", "sk-theirs"); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.at(userRef(alice, "openai", "default")); got != "sk-theirs" {

@@ -3,9 +3,12 @@ module github.com/hanzoai/egress
 go 1.26.5
 
 require (
-	github.com/hanzoai/ai v1.833.47
+	github.com/hanzoai/ai v1.833.52
 	github.com/hanzoai/jwt v0.0.0-20260806093505-517c034b1826
 	github.com/hanzoai/kms/sdk/go v1.1.1
+	github.com/luxfi/keys v1.4.2
+	github.com/valyala/fasthttp v1.72.0
+	github.com/zap-proto/http v0.3.5
 	github.com/zap-proto/zip v1.30.0
 )
 
@@ -61,7 +64,7 @@ require (
 	github.com/gorilla/rpc v1.2.1 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/grandcat/zeroconf v1.0.0 // indirect
-	github.com/hanzoai/account v0.3.1 // indirect
+	github.com/hanzoai/account v0.3.2 // indirect
 	github.com/hanzoai/dashscopego v0.6.0 // indirect
 	github.com/hanzoai/go-openai v1.41.0 // indirect
 	github.com/hanzoai/go-openrouter v1.0.0 // indirect
@@ -81,12 +84,10 @@ require (
 	github.com/luxfi/constants v1.6.2 // indirect
 	github.com/luxfi/container v0.2.1 // indirect
 	github.com/luxfi/crypto v1.20.2 // indirect
-	github.com/luxfi/formatting v1.1.1 // indirect
 	github.com/luxfi/geth v1.20.1 // indirect
-	github.com/luxfi/go-bip32 v1.0.2 // indirect
-	github.com/luxfi/go-bip39 v1.1.2 // indirect
+	github.com/luxfi/go-bip32 v1.1.0 // indirect
+	github.com/luxfi/go-bip39 v1.2.0 // indirect
 	github.com/luxfi/ids v1.3.2 // indirect
-	github.com/luxfi/keys v1.2.0 // indirect
 	github.com/luxfi/kms v1.11.4 // indirect
 	github.com/luxfi/log v1.6.0 // indirect
 	github.com/luxfi/math v1.5.1 // indirect
@@ -94,10 +95,8 @@ require (
 	github.com/luxfi/mdns v0.1.1 // indirect
 	github.com/luxfi/metric v1.10.0 // indirect
 	github.com/luxfi/mock v0.1.1 // indirect
-	github.com/luxfi/proto v1.4.2 // indirect
 	github.com/luxfi/sampler v1.1.0 // indirect
 	github.com/luxfi/tls v1.1.1 // indirect
-	github.com/luxfi/vm v1.3.2 // indirect
 	github.com/luxfi/zap v1.2.7 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
@@ -123,7 +122,6 @@ require (
 	github.com/tklauser/numcpus v0.12.0 // indirect
 	github.com/ua-parser/uap-go v0.0.0-20251207011819-db9adb27a0b8 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fasthttp v1.72.0 // indirect
 	github.com/volcengine/volc-sdk-golang v1.0.241 // indirect
 	github.com/volcengine/volcengine-go-sdk v1.0.141 // indirect
 	github.com/xanzy/ssh-agent v0.3.3 // indirect
@@ -131,7 +129,6 @@ require (
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zap-proto/fiber/v3 v3.2.1 // indirect
 	github.com/zap-proto/go v1.3.0 // indirect
-	github.com/zap-proto/http v0.3.5 // indirect
 	github.com/zap-proto/mcp v1.0.5 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.44.0 // indirect

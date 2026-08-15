@@ -85,6 +85,42 @@ the token, the second from this host's `-url` configuration. A test pins the
 shape of `Call` and `Enroll` against ever growing such a field, because both are
 the kind that gets added later for a good local reason.
 
+**The outbound client belongs to this process.** The dialects reach for one
+client `hanzoai/ai` keeps as a package variable, and it holds nothing until
+something fills it, so `New` fills it. Two consequences worth keeping: it
+verifies certificates and there is no setting that says otherwise, and its
+timeout is the call deadline, which is the only thing that actually stops a
+dialect — they take no context, so an abandoned call is otherwise still running.
+Do not reach for `proxy.InitHttpClient`: it reads a SOCKS setting and, when it
+finds one, builds a transport that verifies nothing.
+
+**A dialect runs on a goroutine, so it is caught on one.** A vendor client that
+falls over is one refused call. Uncaught it is the whole replica, and every
+replica serves every tenant. The error that replaces the fall goes through the
+same scrub as any other, because a panic carries whatever the client was
+holding, which here is a request with the key in its header.
+
+**Nothing keeps a credential.** There is no window and no map — every call reads
+what it spends and it lives on that call's stack. A value here cannot be zeroed
+(KMS hands back a `string`, and so does the dialect surface), so the only
+property worth having is that no copy outlives the call that made it. Rotation
+follows: a key rewritten in KMS is spent on the next call.
+
+**The KMS leg is signed, and wants to be sealed.** `luxfi/keys` v1.4.2 is
+required directly here rather than through the SDK, because before it a service
+identity surrendered its signing key to the collector after its first signature
+— quietly, since the second signature is produced without error and simply does
+not verify. `kms_test.go` guards it; that guard is the only thing standing
+between a dependency bump and finding it in production.
+
+The seal is `hanzoai/kms/sdk/go` v1.1.2, which requires the X25519 + ML-KEM-768
+session before it carries anything and refuses a peer that agrees neither.
+Verified composing here against a local tree; not required yet, because the
+module path resolves through `github.com/hanzoai/kms`, which today redirects to
+an archived repository that cannot take the tag. The tag is on the forge. When
+`hanzoai/kms` exists on GitHub again, `go get github.com/hanzoai/kms/sdk/go@v1.1.2`
+is the whole of it.
+
 ## Verifying
 
 `GOWORK=off go test -race ./...`. The suite runs against a fake `Secrets` and a

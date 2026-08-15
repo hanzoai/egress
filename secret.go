@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
-	"time"
 )
 
 // Secrets is where credentials are kept. It is the same read/write pair
@@ -96,25 +94,19 @@ func slug(provider string) (string, bool) {
 	return s, true
 }
 
-// custody resolves credentials and holds nothing durable. A value read stays in
-// memory for ttl and no longer, which is what makes rotation a KMS write rather
-// than a deploy, and what makes a replica worth deleting rather than
-// investigating.
+// custody resolves credentials and keeps none. A value read lives for the call
+// that read it and nowhere else — there is no map to find one in, so there is
+// nothing for a core dump, a heap profile or another tenant's call to reach.
+//
+// Reading every time is also what makes rotation a KMS write rather than a
+// deploy: a key rewritten there is in use on the next call, not the next
+// window.
 type custody struct {
 	store Secrets
-	ttl   time.Duration
-
-	mu   sync.Mutex
-	held map[string]holding
 }
 
-type holding struct {
-	value string
-	at    time.Time
-}
-
-func newCustody(store Secrets, ttl time.Duration) *custody {
-	return &custody{store: store, ttl: ttl, held: map[string]holding{}}
+func newCustody(store Secrets) *custody {
+	return &custody{store: store}
 }
 
 // resolve returns the credential to spend for this principal and provider, and
@@ -146,42 +138,26 @@ func (c *custody) resolve(ctx context.Context, p Principal, provider, label stri
 // spent and never shown — not to the customer who supplied it, not to an
 // operator.
 func (c *custody) enroll(ctx context.Context, p Principal, provider, label, key string) error {
-	ref := userRef(p, provider, label)
-	if err := c.store.PutSecret(ctx, ref, []byte(key)); err != nil {
+	if err := c.store.PutSecret(ctx, userRef(p, provider, label), []byte(key)); err != nil {
 		return fmt.Errorf("egress: seal: %w", err)
 	}
-	c.mu.Lock()
-	delete(c.held, ref)
-	c.mu.Unlock()
 	return nil
 }
 
-// read returns the value at ref, reusing one held for less than ttl. An absent
-// secret is ("", nil) — the normal state of a tenant that brought no key of its
-// own, and the reason the caller falls through to the shared one. A store that
-// cannot answer is an error and ends the call: an unreachable KMS must not
-// become a reason to look somewhere less guarded.
+// read returns the value at ref. An absent secret is ("", nil) — the normal
+// state of a tenant that brought no key of its own, and the reason the caller
+// falls through to the shared one. A store that cannot answer is an error and
+// ends the call: an unreachable KMS must not become a reason to look somewhere
+// less guarded.
 func (c *custody) read(ctx context.Context, ref string) (string, error) {
-	c.mu.Lock()
-	h, ok := c.held[ref]
-	c.mu.Unlock()
-	if ok && time.Since(h.at) < c.ttl {
-		return h.value, nil
-	}
-
 	value, err := c.store.GetSecret(ctx, ref)
 	if err != nil {
 		if !absent(err) {
 			return "", fmt.Errorf("egress: read credential: %w", err)
 		}
-		value = nil
+		return "", nil
 	}
-	v := strings.TrimSpace(string(value))
-
-	c.mu.Lock()
-	c.held[ref] = holding{value: v, at: time.Now()}
-	c.mu.Unlock()
-	return v, nil
+	return strings.TrimSpace(string(value)), nil
 }
 
 // absent reports whether an error means "no such secret" rather than "the store
