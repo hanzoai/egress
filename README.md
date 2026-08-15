@@ -96,6 +96,41 @@ The failure this prevents is specific: a customer key read out of a process
 environment, or logged in an error, is a breach of somebody else's account
 rather than an internal incident.
 
+## No one logs in, including us
+
+A host that a person can log into is a host whose secrets a person can read, and
+"a person" includes anyone who takes that person's credential. So there is no
+interactive access: no SSH for operators, no shell, no console login, no
+debug endpoint that returns state.
+
+That only works if **nothing is ever repaired in place**. A host that
+misbehaves is destroyed and replaced from the image, which is possible precisely
+because it holds no state worth keeping — the credentials live in KMS and the
+host is a way of spending them, not a place they live. Repair is replacement,
+which is also why the absence of a login costs nothing operationally.
+
+Two things have to be true for that to be honest rather than a slogan:
+
+- **it boots without a human.** A LUKS root that needs a passphrase typed makes
+  every reboot an outage and every 3am page a person. The unlock is
+  network-bound instead — the host asks an unlock service that is NOT in the
+  same cloud, and mounts only if it answers. A stolen disk elsewhere cannot ask;
+  a cloud API token cannot answer.
+- **it is observable from outside.** Metrics, logs and health leave the host to
+  the o11y plane. Nothing about diagnosis requires being on the box, because
+  being on the box is the thing that was removed.
+
+## The key is fetched, never carried
+
+A replica resolves an upstream credential from KMS over ZAP at call time, behind
+a short TTL, and holds nothing durable. That is what makes it horizontally
+scalable — every replica is identical and interchangeable, none is authoritative
+— and it is also what makes rotation ordinary: a key rewritten in KMS is in use
+within the TTL, with no redeploy, no restart and no manifest change.
+
+The same property is what lets a compromised replica be deleted rather than
+investigated. It knew nothing that outlives it.
+
 ## Scaling
 
 Stateless. The only state worth holding is the credential, and a replica does
