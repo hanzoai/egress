@@ -5,7 +5,7 @@ go 1.26.5
 require (
 	github.com/hanzoai/ai v1.833.52
 	github.com/hanzoai/jwt v0.0.0-20260806093505-517c034b1826
-	github.com/hanzoai/kms/sdk/go v1.1.2
+	github.com/hanzoai/kms/sdk/go v1.1.3
 	github.com/luxfi/keys v1.4.2
 	github.com/valyala/fasthttp v1.72.0
 	github.com/zap-proto/http v0.3.5
