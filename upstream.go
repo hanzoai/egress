@@ -32,12 +32,14 @@ type Upstream struct {
 	Auth Auth
 	// Extra is any static header the vendor requires alongside the credential.
 	Extra map[string]string
-	// Ops is the set of calls allowed, keyed "METHOD /path". A vendor API is
-	// wider than the part we use: OpenRouter's root also answers /v1/key,
-	// /v1/credits and a key-management surface. Forwarding an arbitrary path
-	// under the vendor root would authenticate those calls with our credential,
-	// so only the calls we actually make are reachable.
-	Ops map[string]bool
+	// Ops is the set of calls allowed, keyed "METHOD /path", each tagged with
+	// the kind of thing it does. A vendor API is wider than the part we use:
+	// OpenRouter's root also answers /v1/key, /v1/credits and a key-management
+	// surface. Forwarding an arbitrary path under the vendor root would
+	// authenticate those calls with our credential, so only the calls we
+	// actually make are reachable — and a caller is granted a KIND, not a
+	// vendor, so buying inference does not also come with reading the account.
+	Ops map[string]Kind
 }
 
 // Auth names how a vendor wants its credential presented — the header it reads
@@ -46,6 +48,17 @@ type Auth struct {
 	Header string
 	Prefix string
 }
+
+// Kind separates buying inference from reading the account behind it. They are
+// different acts with different consequences, so they are granted separately:
+// the service that answers prompts has no business knowing our balance, and the
+// job that watches the balance has no business spending it.
+type Kind string
+
+const (
+	Inference Kind = "inference"
+	Account   Kind = "account"
+)
 
 var bearer = Auth{Header: "Authorization", Prefix: "Bearer "}
 
@@ -56,36 +69,36 @@ var upstreams = map[string]Upstream{
 		Base:   mustURL("https://openrouter.ai/api"),
 		Secret: "ai/OPENROUTER_API_KEY",
 		Auth:   bearer,
-		Ops: ops(
-			"GET /v1/models",            // catalog discovery
-			"POST /v1/chat/completions", // inference, streamed or not
-			"POST /v1/completions",
-			"POST /v1/embeddings",
-			// Read-only account metadata: the float the treasury refills
-			// against, the key-status an operator console shows, and usage.
+		Ops: map[string]Kind{
+			"GET /v1/models":            Inference, // catalog discovery
+			"POST /v1/chat/completions": Inference, // streamed or not
+			"POST /v1/completions":      Inference,
+			"POST /v1/embeddings":       Inference,
+
+			// Read-only account metadata: the float a treasury job refills
+			// against, the key status a console shows, the usage record.
+			// Granted as `account`, so the service that answers prompts cannot
+			// read them — that service is the one with the widest attack
+			// surface, and our balance and key metadata are exactly what an
+			// attacker inside it would want next.
 			//
-			// What is deliberately absent is the surface next to these that
-			// MOVES money rather than reporting it — /v1/keys, which mints and
-			// revokes. A caller can learn what is left; it cannot mint more.
-			"GET /v1/credits",
-			"GET /v1/key",
-			"GET /v1/generation",
-			"GET /v1/activity",
-		),
+			// Absent entirely is the surface beside these that MOVES money
+			// rather than reporting it: /v1/keys, which mints and revokes. No
+			// kind reaches it.
+			"GET /v1/credits":    Account,
+			"GET /v1/key":        Account,
+			"GET /v1/generation": Account,
+			"GET /v1/activity":   Account,
+		},
 	},
 }
 
-// ops builds an operation set from its written-out form.
-func ops(list ...string) map[string]bool {
-	out := make(map[string]bool, len(list))
-	for _, o := range list {
-		out[o] = true
-	}
-	return out
+// Allows reports the kind of call this is, and whether the upstream permits it
+// at all.
+func (u Upstream) Allows(method, path string) (Kind, bool) {
+	k, ok := u.Ops[method+" "+path]
+	return k, ok
 }
-
-// Allows reports whether this upstream permits a call.
-func (u Upstream) Allows(method, path string) bool { return u.Ops[method+" "+path] }
 
 // Upstreams reports the allowlisted names, sorted for a stable startup log.
 func Upstreams() []string {

@@ -151,9 +151,12 @@ func build(t *testing.T, c *cluster, v *vault, target string, refresh time.Durat
 	t.Helper()
 	only(t, map[string]Upstream{"openrouter": {
 		Base: mustURL(target + "/api"), Secret: "ai/OPENROUTER_API_KEY", Auth: bearer,
-		Ops: ops("GET /v1/models", "POST /v1/chat/completions"),
+		Ops: map[string]Kind{
+			"GET /v1/models": Inference, "POST /v1/chat/completions": Inference,
+			"GET /v1/credits": Account, "GET /v1/key": Account,
+		},
 	}})
-	return assemble(t, c, v, refresh, map[string][]string{callerSub: {"openrouter"}})
+	return assemble(t, c, v, refresh, map[string][]string{callerSub: {"openrouter:inference"}})
 }
 
 func assemble(t *testing.T, c *cluster, v *vault, refresh time.Duration, grants map[string][]string) *Server {
@@ -275,9 +278,9 @@ func TestVendorAuthScheme(t *testing.T) {
 		Secret: "ai/OPENROUTER_API_KEY",
 		Auth:   Auth{Header: "x-api-key"},
 		Extra:  map[string]string{"anthropic-version": "2023-06-01"},
-		Ops:    ops("POST /v1/messages"),
+		Ops:    map[string]Kind{"POST /v1/messages": Inference},
 	}})
-	s := assemble(t, c, v, time.Hour, map[string][]string{callerSub: {"anthropic"}})
+	s := assemble(t, c, v, time.Hour, map[string][]string{callerSub: {"anthropic:inference"}})
 
 	if resp := call(t, s, "POST", "/anthropic/v1/messages", token(callerSub, audience), nil); resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
@@ -368,13 +371,14 @@ func TestOnlyListedOperations(t *testing.T) {
 	s := build(t, c, v, up.URL, time.Hour)
 	tok := token(callerSub, audience)
 
+	// Not listed under any kind: the surface that MINTS and REVOKES keys, and a
+	// method the vendor does not take on a path that otherwise exists.
 	for _, tc := range []struct{ method, path string }{
-		{"GET", "/openrouter/v1/key"},       // names and limits of the key in use
-		{"GET", "/openrouter/v1/credits"},   // account balance
-		{"GET", "/openrouter/v1/keys"},      // key management
-		{"POST", "/openrouter/v1/keys"},     // minting more keys
-		{"DELETE", "/openrouter/v1/models"}, // right path, wrong method
-		{"GET", "/openrouter/v1/generation"},
+		{"GET", "/openrouter/v1/keys"},
+		{"POST", "/openrouter/v1/keys"},
+		{"DELETE", "/openrouter/v1/keys"},
+		{"DELETE", "/openrouter/v1/models"},
+		{"POST", "/openrouter/v1/auth/keys"},
 	} {
 		reached.Store(false)
 		resp := call(t, s, tc.method, tc.path, tok, nil)
@@ -403,10 +407,10 @@ func TestGrantIsPerProvider(t *testing.T) {
 	up := newUpstream(t, &got, func(w http.ResponseWriter) { _, _ = w.Write([]byte(`{}`)) })
 
 	only(t, map[string]Upstream{
-		"openrouter": {Base: mustURL(up.URL + "/api"), Secret: "ai/OPENROUTER_API_KEY", Auth: bearer, Ops: ops("GET /v1/models")},
-		"anthropic":  {Base: mustURL(up.URL + "/an"), Secret: "ai/OPENROUTER_API_KEY", Auth: bearer, Ops: ops("GET /v1/models")},
+		"openrouter": {Base: mustURL(up.URL + "/api"), Secret: "ai/OPENROUTER_API_KEY", Auth: bearer, Ops: map[string]Kind{"GET /v1/models": Inference}},
+		"anthropic":  {Base: mustURL(up.URL + "/an"), Secret: "ai/OPENROUTER_API_KEY", Auth: bearer, Ops: map[string]Kind{"GET /v1/models": Inference}},
 	})
-	s := assemble(t, c, v, time.Hour, map[string][]string{callerSub: {"openrouter"}})
+	s := assemble(t, c, v, time.Hour, map[string][]string{callerSub: {"openrouter:inference"}})
 
 	tok := token(callerSub, audience)
 	if resp := call(t, s, "GET", "/openrouter/v1/models", tok, nil); resp.StatusCode != 200 {
@@ -420,8 +424,63 @@ func TestGrantIsPerProvider(t *testing.T) {
 func TestGrantForUnknownUpstreamRefused(t *testing.T) {
 	c := newCluster(t)
 	if _, err := NewIdentity(c.server.URL, audience,
-		map[string][]string{callerSub: {"nosuchvendor"}}, c.server.Client()); err == nil {
+		map[string][]string{callerSub: {"nosuchvendor:inference"}}, c.server.Client()); err == nil {
 		t.Fatal("accepted a grant for an unknown upstream")
+	}
+	if _, err := NewIdentity(c.server.URL, audience,
+		map[string][]string{callerSub: {"openrouter"}}, c.server.Client()); err == nil {
+		t.Fatal("accepted a grant that names no kind")
+	}
+	if _, err := NewIdentity(c.server.URL, audience,
+		map[string][]string{callerSub: {"openrouter:everything"}}, c.server.Client()); err == nil {
+		t.Fatal("accepted a grant naming an unknown kind")
+	}
+}
+
+// Buying inference does not come with reading the account behind it. The
+// service that answers prompts has the widest attack surface in the fleet, and
+// our balance, key metadata and usage record are exactly what an attacker
+// inside it would want next.
+func TestInferenceGrantCannotReadAccount(t *testing.T) {
+	c, v := newCluster(t), newVault(t, "vendor-key-1")
+	reached := atomic.Bool{}
+	var got atomic.Value
+	up := newUpstream(t, &got, func(w http.ResponseWriter) { reached.Store(true); _, _ = w.Write([]byte(`{}`)) })
+	s := build(t, c, v, up.URL, time.Hour) // granted openrouter:inference only
+	tok := token(callerSub, audience)
+
+	for _, path := range []string{"/openrouter/v1/credits", "/openrouter/v1/key"} {
+		reached.Store(false)
+		if resp := call(t, s, "GET", path, tok, nil); resp.StatusCode != 403 {
+			t.Errorf("%s = %d, want 403 for an inference-only caller", path, resp.StatusCode)
+		}
+		if reached.Load() {
+			t.Errorf("%s reached the vendor with our credential", path)
+		}
+	}
+	// The same workload still buys inference.
+	if resp := call(t, s, "GET", "/openrouter/v1/models", tok, nil); resp.StatusCode != 200 {
+		t.Errorf("inference = %d, want 200", resp.StatusCode)
+	}
+}
+
+// The treasury reads the float and cannot spend it — the mirror of the above.
+func TestAccountGrantCannotSpend(t *testing.T) {
+	c, v := newCluster(t), newVault(t, "vendor-key-1")
+	var got atomic.Value
+	up := newUpstream(t, &got, func(w http.ResponseWriter) { _, _ = w.Write([]byte(`{}`)) })
+	only(t, map[string]Upstream{"openrouter": {
+		Base: mustURL(up.URL + "/api"), Secret: "ai/OPENROUTER_API_KEY", Auth: bearer,
+		Ops: map[string]Kind{"GET /v1/models": Inference, "GET /v1/credits": Account},
+	}})
+	s := assemble(t, c, v, time.Hour, map[string][]string{otherSub: {"openrouter:account"}})
+	tok := token(otherSub, audience)
+
+	if resp := call(t, s, "GET", "/openrouter/v1/credits", tok, nil); resp.StatusCode != 200 {
+		t.Errorf("account read = %d, want 200", resp.StatusCode)
+	}
+	if resp := call(t, s, "GET", "/openrouter/v1/models", tok, nil); resp.StatusCode != 403 {
+		t.Errorf("account-only caller bought inference: %d, want 403", resp.StatusCode)
 	}
 }
 

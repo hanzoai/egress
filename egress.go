@@ -118,22 +118,25 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "no such upstream")
 		return
 	}
-	// Authentication proved which workload is asking. This is the separate
-	// question of whether that workload may spend on THIS provider.
-	if !caller.May(name) {
-		s.count.refused.Add(1)
-		s.log.Warn("refused", "workload", caller.Subject, "upstream", name, "reason", "no grant")
-		fail(w, http.StatusForbidden, "forbidden")
-		return
-	}
 	// A vendor's API is wider than the part we use. Only the calls in the table
 	// are reachable, so our credential can never authenticate a vendor's
-	// account, billing or key-management surface on a caller's behalf.
-	if !up.Allows(r.Method, tail) {
+	// key-management surface on a caller's behalf.
+	kind, listed := up.Allows(r.Method, tail)
+	if !listed {
 		s.count.refused.Add(1)
 		s.log.Warn("refused", "workload", caller.Subject, "upstream", name,
 			"method", r.Method, "path", tail, "reason", "no such operation")
 		fail(w, http.StatusNotFound, "no such operation")
+		return
+	}
+	// Authentication proved which workload is asking. This is the separate
+	// question of whether that workload may make THIS KIND of call here —
+	// buying inference does not come with reading the account behind it.
+	if !caller.May(name, kind) {
+		s.count.refused.Add(1)
+		s.log.Warn("refused", "workload", caller.Subject, "upstream", name,
+			"kind", kind, "reason", "no grant")
+		fail(w, http.StatusForbidden, "forbidden")
 		return
 	}
 	if _, ok := s.cred.Value(up.Secret); !ok {
@@ -143,7 +146,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.count.spend.Add(1)
-	s.log.Info("spend", "workload", caller.Subject, "upstream", name, "method", r.Method, "path", tail)
+	s.log.Info("spend", "workload", caller.Subject, "upstream", name,
+		"kind", kind, "method", r.Method, "path", tail)
 	r = r.WithContext(context.WithValue(r.Context(), key{}, resolved{up: up, tail: tail}))
 	s.proxy.ServeHTTP(w, r)
 }
