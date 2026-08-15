@@ -50,7 +50,17 @@ func New(cfg Config, store Secrets, log *slog.Logger) (*Server, error) {
 	// configuration for deciding otherwise. The timeout is the call deadline,
 	// which is also what stops an abandoned dialect: a dialect takes no
 	// context, so without one it runs until the vendor gives up.
-	proxy.ProxyHttpClient = &http.Client{Timeout: cfg.Deadline}
+	//
+	// The route is this process's too. Go's default transport reads
+	// HTTP_PROXY and friends out of the environment, which would let whoever
+	// writes the environment choose the far end of the connection that
+	// carries a credential — the same decision the certificate check exists
+	// to take away from them. So the client dials the upstream named in the
+	// config and nothing else. Everything else about the default transport,
+	// pooling and HTTP/2 included, is kept.
+	direct := http.DefaultTransport.(*http.Transport).Clone()
+	direct.Proxy = nil
+	proxy.ProxyHttpClient = &http.Client{Timeout: cfg.Deadline, Transport: direct}
 
 	s.app = zip.New(zip.Config{AppName: "egress"})
 

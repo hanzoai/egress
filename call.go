@@ -3,9 +3,11 @@ package egress
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -222,18 +224,84 @@ func language(lang string) string {
 	return lang
 }
 
-// scrub removes the credential from an error. Providers echo parts of a
-// rejected key back in their error bodies, and an error is the one value on
-// this path that travels to a caller and into a log.
+// scrub removes the credential from an error. An error is the one value on
+// this path that travels to a caller and into a log, and providers quote the
+// key they rejected — sometimes whole, more often a piece of one: the first
+// segment, the last few characters, the two joined around a row of asterisks.
+// A piece is worth less than the whole and more than nothing, so scrub looks
+// for what the error and the credential have in common rather than for the
+// credential itself, and takes out every run it finds.
 func scrub(err error, key string) error {
 	if err == nil || key == "" {
 		return err
 	}
 	text := err.Error()
-	if !strings.Contains(text, key) {
+	clean := redact(text, forms(key))
+	if clean == text {
 		return err
 	}
-	return errors.New(strings.ReplaceAll(text, key, "[redacted]"))
+	return errors.New(clean)
+}
+
+// span is the shortest stretch shared with the credential that scrub takes
+// out. Four characters is what a masked echo gives away of the end of a key.
+// Shorter runs start matching ordinary words and eat the message, and the
+// message is what makes an error worth returning.
+const span = 4
+
+// forms are the shapes a credential takes on the way to a provider. A quote
+// of any of them is a quote of the credential.
+func forms(key string) []string {
+	out := []string{key}
+	for _, f := range []string{
+		base64.StdEncoding.EncodeToString([]byte(key)),
+		base64.StdEncoding.EncodeToString([]byte(key + ":")), // HTTP basic
+		base64.RawURLEncoding.EncodeToString([]byte(key)),
+		url.QueryEscape(key),
+	} {
+		if f != key {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// redact replaces every stretch of text that also appears in one of secrets.
+// A key shorter than span is matched whole, so a short key cannot slip through
+// the length rule that exists to protect the message.
+func redact(text string, secrets []string) string {
+	least := span
+	for _, s := range secrets {
+		if len(s) < least {
+			least = len(s)
+		}
+	}
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		n := 0
+		for _, s := range secrets {
+			if m := shared(text[i:], s); m > n {
+				n = m
+			}
+		}
+		if n < least {
+			b.WriteByte(text[i])
+			i++
+			continue
+		}
+		b.WriteString("[redacted]")
+		i += n
+	}
+	return b.String()
+}
+
+// shared returns how much of text, from its start, appears in secret.
+func shared(text, secret string) int {
+	n := 0
+	for n < len(text) && strings.Contains(secret, text[:n+1]) {
+		n++
+	}
+	return n
 }
 
 // frames carries provider output to the caller as it arrives. It satisfies what
