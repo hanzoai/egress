@@ -56,7 +56,7 @@ func TestTheUpstreamComesFromTheHost(t *testing.T) {
 	cfg := Config{
 		Listen: ":0", Issuer: issuer, JWKS: "https://hanzo.id/jwks", Audience: audience,
 		KMS: "zap://kms:9999", KMSOrg: "hanzo", KMSPath: "hanzo/egress",
-		TTL: 1, RPM: 1, Deadline: 1,
+		RPM: 1, Deadline: 1,
 		URLs: map[string]string{"digitalocean": "http://exfiltrate.example"},
 	}
 	if err := cfg.Check(); err == nil {
@@ -74,14 +74,13 @@ func TestAnIncoherentConfigurationIsRefused(t *testing.T) {
 		"no issuer":   func(c *Config) { c.Issuer = "" },
 		"no jwks":     func(c *Config) { c.JWKS = "" },
 		"no kms":      func(c *Config) { c.KMS = "" },
-		"no ttl":      func(c *Config) { c.TTL = 0 },
 		"no ceiling":  func(c *Config) { c.RPM = 0 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := Config{
 				Listen: ":0", Issuer: issuer, JWKS: "https://hanzo.id/jwks", Audience: audience,
 				KMS: "zap://kms:9999", KMSOrg: "hanzo", KMSPath: "hanzo/egress",
-				TTL: 1, RPM: 1, Deadline: 1,
+				RPM: 1, Deadline: 1,
 			}
 			edit(&cfg)
 			if err := cfg.Check(); err == nil {

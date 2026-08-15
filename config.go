@@ -49,11 +49,6 @@ type Config struct {
 	// derived at and the name KMS authorizes.
 	KMSPath string
 
-	// TTL bounds how long a resolved credential may be reused before it is read
-	// again. It is the rotation window: a key rewritten in KMS is in use within
-	// TTL, with no redeploy.
-	TTL time.Duration
-
 	// RPM is how many calls one principal may make per minute.
 	RPM int
 
@@ -80,7 +75,6 @@ func (c *Config) Flags(fs *flag.FlagSet) {
 	fs.StringVar(&c.KMS, "kms", env("EGRESS_KMS", ""), "KMS endpoint, zap://host:port")
 	fs.StringVar(&c.KMSOrg, "kms-org", env("EGRESS_KMS_ORG", "hanzo"), "KMS tenant holding the custody tree")
 	fs.StringVar(&c.KMSPath, "kms-path", env("EGRESS_KMS_PATH", "hanzo/egress"), "this service's identity path")
-	fs.DurationVar(&c.TTL, "ttl", envDuration("EGRESS_TTL", time.Minute), "credential reuse window")
 	fs.IntVar(&c.RPM, "rpm", envInt("EGRESS_RPM", 600), "calls per minute per principal")
 	fs.DurationVar(&c.Deadline, "deadline", envDuration("EGRESS_DEADLINE", 5*time.Minute), "upstream call deadline")
 	fs.Var(urls{&c.URLs}, "url", "upstream base URL for one provider, provider=url (repeatable)")
@@ -102,8 +96,8 @@ func (c *Config) Check() error {
 	if len(missing) > 0 {
 		return fmt.Errorf("egress: %s must be set", strings.Join(sorted(missing), ", "))
 	}
-	if c.TTL <= 0 || c.RPM <= 0 || c.Deadline <= 0 {
-		return errors.New("egress: ttl, rpm and deadline must be positive")
+	if c.RPM <= 0 || c.Deadline <= 0 {
+		return errors.New("egress: rpm and deadline must be positive")
 	}
 	for provider, u := range c.URLs {
 		if !strings.HasPrefix(u, "https://") {

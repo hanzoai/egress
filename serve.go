@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hanzoai/ai/proxy"
 	"github.com/zap-proto/zip"
 	"github.com/zap-proto/zip/middleware"
 )
@@ -36,11 +37,21 @@ func New(cfg Config, store Secrets, log *slog.Logger) (*Server, error) {
 	s := &Server{
 		cfg:      cfg,
 		verify:   NewVerifier(cfg.Issuer, cfg.Audience, cfg.JWKS, 5*time.Minute),
-		custody:  newCustody(store, cfg.TTL),
+		custody:  newCustody(store),
 		limiter:  &limiter{rpm: cfg.RPM, seen: map[string]*window{}},
 		circuits: circuits{by: map[string]*middleware.Breaker{}},
 		log:      log,
 	}
+	// The dialects make their provider call through one client hanzoai/ai
+	// keeps as a package variable, and it holds nothing until a process puts
+	// something there. Egress puts its own there: the outbound leg belongs to
+	// the service that spends on it. Certificates are verified — an upstream
+	// that cannot prove who it is does not get a credential, and there is no
+	// configuration for deciding otherwise. The timeout is the call deadline,
+	// which is also what stops an abandoned dialect: a dialect takes no
+	// context, so without one it runs until the vendor gives up.
+	proxy.ProxyHttpClient = &http.Client{Timeout: cfg.Deadline}
+
 	s.app = zip.New(zip.Config{AppName: "egress"})
 
 	// The gate is the FIRST thing registered, and it is registered on the app

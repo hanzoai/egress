@@ -160,6 +160,14 @@ func run(ctx context.Context, call func() (*model.ModelResult, error)) (*model.M
 	}
 	done := make(chan answer, 1)
 	go func() {
+		// The dialect runs in a goroutine of its own, and a panic in a
+		// goroutine is the whole process unless it is caught where it happens.
+		// Caught, a vendor client that falls over is one refused call.
+		defer func() {
+			if p := recover(); p != nil {
+				done <- answer{nil, fmt.Errorf("egress: upstream call failed: %v", p)}
+			}
+		}()
 		result, err := call()
 		done <- answer{result, err}
 	}()
