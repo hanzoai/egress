@@ -48,13 +48,16 @@ type proof struct {
 type Caller struct {
 	// Subject is the workload: `system:serviceaccount:<namespace>:<name>`.
 	Subject string
-	// providers is the caller's grant, held here so the authorization decision
-	// travels with the identity that earned it.
-	providers map[string]bool
+	// granted is the caller's grant, keyed "provider:kind", held here so the
+	// authorization decision travels with the identity that earned it.
+	granted map[string]bool
 }
 
-// May reports whether this caller may spend on an upstream.
-func (c Caller) May(upstream string) bool { return c.providers[upstream] }
+// May reports whether this caller may make this kind of call on an upstream.
+// Buying inference and reading the account behind it are granted separately.
+func (c Caller) May(upstream string, k Kind) bool {
+	return c.granted[upstream+":"+string(k)]
+}
 
 // proofTTL bounds how long the cluster's answer is reused. Short enough that a
 // revoked workload stops spending promptly, long enough that a busy caller does
@@ -63,10 +66,11 @@ const proofTTL = time.Minute
 
 // NewIdentity builds the boundary. api is the cluster API server, audience the
 // value callers must have their token minted for, and grants the table of which
-// workload may spend on which upstreams.
+// workload may make which kind of call on which upstream.
 //
-// An empty table is refused rather than read as "anyone": a deployment that
-// forgot to say who may spend must not discover it by paying.
+// A grant is written `provider:kind` — `openrouter:inference` is not
+// `openrouter:account`. An empty table is refused rather than read as "anyone":
+// a deployment that forgot to say who may spend must not discover it by paying.
 func NewIdentity(api, audience string, grants map[string][]string, client *http.Client) (*Identity, error) {
 	api = strings.TrimRight(strings.TrimSpace(api), "/")
 	if api == "" {
@@ -86,15 +90,24 @@ func NewIdentity(api, audience string, grants map[string][]string, client *http.
 			continue
 		}
 		allowed := map[string]bool{}
-		for _, p := range providers {
-			p = strings.TrimSpace(p)
-			if p == "" {
+		for _, g := range providers {
+			g = strings.TrimSpace(g)
+			if g == "" {
 				continue
 			}
-			if _, known := upstreams[p]; !known {
-				return nil, fmt.Errorf("identity: grant names unknown upstream %q", p)
+			provider, kind, ok := strings.Cut(g, ":")
+			if !ok {
+				return nil, fmt.Errorf("identity: grant %q must name a kind, as provider:kind", g)
 			}
-			allowed[p] = true
+			if _, known := upstreams[provider]; !known {
+				return nil, fmt.Errorf("identity: grant names unknown upstream %q", provider)
+			}
+			switch Kind(kind) {
+			case Inference, Account:
+			default:
+				return nil, fmt.Errorf("identity: grant %q names unknown kind %q", g, kind)
+			}
+			allowed[provider+":"+kind] = true
 		}
 		if len(allowed) > 0 {
 			table[subject] = allowed
@@ -125,11 +138,11 @@ func (i *Identity) Check(r *http.Request) (Caller, error) {
 	if err != nil {
 		return Caller{}, err
 	}
-	providers, granted := i.grants[subject]
-	if !granted {
+	granted, ok := i.grants[subject]
+	if !ok {
 		return Caller{}, fmt.Errorf("workload holds no grant")
 	}
-	return Caller{Subject: subject, providers: providers}, nil
+	return Caller{Subject: subject, granted: granted}, nil
 }
 
 // subject asks the cluster who a token belongs to, reusing a recent answer.
@@ -246,7 +259,7 @@ func presented(r *http.Request) string {
 
 // ParseGrants reads the authorization table from its configured form:
 //
-//	system:serviceaccount:hanzo:cloud=openrouter;system:serviceaccount:zen:zen=openrouter
+//	system:serviceaccount:hanzo:cloud=openrouter:inference;system:serviceaccount:hanzo:treasury=openrouter:account
 //
 // Written out rather than inferred, because who may spend our money is a thing
 // a reader should be able to see in full.

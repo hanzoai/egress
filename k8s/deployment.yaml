@@ -50,12 +50,16 @@ spec:
             # addressed to anything else is refused, which is what stops one
             # workload replaying another's.
             - {name: EGRESS_AUDIENCE, value: "egress"}
-            # Who may spend, on what. Written out so it can be read.
+            # Who may spend, on what, and in what way. Written out so it can be
+            # read. `inference` buys completions; `account` reads the balance and
+            # key metadata. cloud is the pod that also runs /exec and sandboxes,
+            # so it is granted inference and NOT account: a compromise there
+            # cannot read our float, the key's limits, or the usage record.
             - name: EGRESS_GRANTS
               value: >-
-                system:serviceaccount:hanzo:cloud=openrouter;
-                system:serviceaccount:zen:zen=openrouter;
-                system:serviceaccount:enso:enso=openrouter
+                system:serviceaccount:hanzo:cloud=openrouter:inference;
+                system:serviceaccount:zen:zen=openrouter:inference;
+                system:serviceaccount:enso:enso=openrouter:inference
             - {name: EGRESS_REFRESH, value: "60s"}
             # The identity egress reads its own credentials with. It is a MEMBER
             # of the org holding them: the secrets plane requires admin scope to
