@@ -15,6 +15,9 @@ metered call and never hold a key. `ingress` is the inbound twin.
 - **Runs off the managed cluster.** A DO token reaching this process defeats the
   entire design; deployment location is a correctness property, not an ops
   preference.
+- **A BYOK key is write-only and never returned** — not to its owner, not to an
+  operator, not to support. It is spent only for the validated principal it
+  belongs to, and its use is recorded because the customer will ask.
 - **Refuse rather than serve unauthenticated.** An unidentifiable caller cannot
   spend money.
 

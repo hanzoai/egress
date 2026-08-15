@@ -62,6 +62,40 @@ key usable without ever handing it back.
 A local single-binary `ai` needs none of this: keys from the environment, direct
 calls, no KMS and no egress. That path stays exactly as it is.
 
+## BYOK — a customer's key is not ours to hold loosely
+
+A customer bringing their own provider key is the sharper case: it is their
+money, their vendor relationship and our liability. It must be **more** guarded
+than our own keys, not less, and it must reach the upstream through this same
+door — a BYOK path that bypasses egress to call directly would be the one place
+a customer key is handled worse than a platform key.
+
+The custody rule already exists and egress inherits it rather than inventing a
+second one:
+
+    /orgs/{org}/users/{user}/connectors/{provider}/{label}    per-user
+    /orgs/{org}/cloud/{provider}/{label}                      per-org
+
+**The path is built from the VALIDATED principal, never from a request field.**
+That is the whole tenant boundary: a caller that could name its own path could
+name another tenant's. Sealed in KMS, never in a row, verified before store.
+
+Three properties egress owes a BYOK key specifically:
+
+- **it is never returned, to anyone** — not to the customer who supplied it, not
+  to an operator, not to a support tool. Write-only after enrolment. A key that
+  can be read back is a key that leaks through whichever surface reads it.
+- **it is spent only for its owner** — the credential used for a call is
+  selected by the validated principal of the caller, so one tenant's key cannot
+  fund another's request even by mistake.
+- **its use is the customer's record too** — the same audit trail that answers
+  "who read this" answers "what did you spend my key on", which is the question
+  a customer asks after a surprise vendor bill.
+
+The failure this prevents is specific: a customer key read out of a process
+environment, or logged in an error, is a breach of somebody else's account
+rather than an internal incident.
+
 ## Scaling
 
 Stateless. The only state worth holding is the credential, and a replica does
