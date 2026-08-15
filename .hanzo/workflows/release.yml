@@ -66,7 +66,13 @@ jobs:
             -o dist/egress-linux-amd64 ./cmd/egress
           (cd dist && sha256sum egress-linux-amd64 > egress-linux-amd64.sha256)
 
-      - name: Publish
+      # Publishing is four named steps rather than one. Task logs on this forge
+      # are zstd blobs in S3 and awkward to read, but step NAMES and their
+      # statuses are queryable -- so a failure says which call broke without
+      # anyone opening a log.
+
+      - name: Resolve the release id
+        id: rel
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.version.outputs.tag }}
@@ -75,26 +81,54 @@ jobs:
           set -euo pipefail
           auth="Authorization: token $TOKEN"
 
-          # Reuse the release if the tag was already published, so a re-run is
-          # not a second half-populated release.
-          id=$(curl -sf -H "$auth" "$FORGE/repos/$REPO/releases/tags/$TAG" \
-               | sed -n 's/.*"id":\([0-9]*\).*/\1/p' | head -1 || true)
-          if [ -z "$id" ]; then
+          # An annotated tag already has a release row here, so this normally
+          # finds one and the POST never runs. Parse with jq: `"id"` appears
+          # several times in the object (the author carries one too) and a
+          # greedy sed takes the LAST, which silently yields a valid-looking
+          # number for the wrong release. The upload then 404s far from here.
+          body=$(curl -sf -H "$auth" "$FORGE/repos/$REPO/releases/tags/$TAG" || true)
+          id=$(printf '%s' "$body" | jq -er '.id' 2>/dev/null || true)
+
+          if [ -z "$id" ] || [ "$id" = "null" ]; then
             id=$(curl -sf -X POST -H "$auth" -H 'Content-Type: application/json' \
                    -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\"}" \
-                   "$FORGE/repos/$REPO/releases" \
-                 | sed -n 's/.*"id":\([0-9]*\).*/\1/p' | head -1)
+                   "$FORGE/repos/$REPO/releases" | jq -er '.id')
           fi
-          [ -n "$id" ] || { echo "no release id"; exit 1; }
+          [ -n "$id" ] && [ "$id" != "null" ]
+          echo "id=$id" >> "$GITHUB_OUTPUT"
 
-          for f in egress-linux-amd64 egress-linux-amd64.sha256; do
-            curl -sf -X POST -H "$auth" \
-              -F "attachment=@dist/$f" \
-              "$FORGE/repos/$REPO/releases/$id/assets?name=$f" >/dev/null
-          done
+      - name: Upload the binary
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ID: ${{ steps.rel.outputs.id }}
+        run: |
+          set -euo pipefail
+          curl -sf -X POST -H "Authorization: token $TOKEN" \
+            -F "attachment=@dist/egress-linux-amd64" \
+            "$FORGE/repos/$REPO/releases/$ID/assets?name=egress-linux-amd64" >/dev/null
 
-          # A release with no asset is the failure this step exists to prevent,
-          # and it is invisible from the release page alone.
-          n=$(curl -sf -H "$auth" "$FORGE/repos/$REPO/releases/$id" \
-              | grep -o '"name":"egress-linux-amd64' | wc -l)
-          [ "$n" -ge 2 ] || { echo "assets did not attach"; exit 1; }
+      - name: Upload the checksum
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ID: ${{ steps.rel.outputs.id }}
+        run: |
+          set -euo pipefail
+          curl -sf -X POST -H "Authorization: token $TOKEN" \
+            -F "attachment=@dist/egress-linux-amd64.sha256" \
+            "$FORGE/repos/$REPO/releases/$ID/assets?name=egress-linux-amd64.sha256" >/dev/null
+
+      - name: Verify the assets attached
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ID: ${{ steps.rel.outputs.id }}
+        run: |
+          set -euo pipefail
+          # A release carrying no binary is the failure this exists to catch,
+          # and it looks identical to a good one from the release page.
+          n=$(curl -sf -H "Authorization: token $TOKEN" \
+                "$FORGE/repos/$REPO/releases/$ID" \
+              | jq -r '[.assets[]?.name] | length')
+          [ "${n:-0}" -ge 2 ]
