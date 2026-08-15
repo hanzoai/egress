@@ -1,0 +1,57 @@
+[Unit]
+Description=Hanzo Egress — the outbound trust boundary
+Documentation=https://git.hanzo.ai/hanzoai/egress
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/egress
+Restart=always
+RestartSec=2s
+
+# Configuration arrives from this host and nowhere else. The file holds
+# LUX_MNEMONIC — the identity KMS authorizes — so it is root-owned 0400 and
+# lives on the LUKS root. It is the innermost secret on the box; everything
+# else egress touches is fetched with it and never written down.
+EnvironmentFile=/etc/egress/env
+
+User=egress
+Group=egress
+DynamicUser=no
+
+# A provider key exists only in this process's memory. These stop it reaching
+# anywhere it could be read back.
+LimitCORE=0
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@debug @mount @obsolete @privileged @resources
+UMask=0077
+
+# No writable path at all: egress writes no files by design, and a process that
+# cannot write cannot spill a credential to disk.
+ReadWritePaths=
+
+[Install]
+WantedBy=multi-user.target
