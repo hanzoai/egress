@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: egress
+  namespace: hanzo-egress
+  labels: {app: egress}
+spec:
+  # Stateless: a replica resolves its credentials from KMS at boot and refreshes
+  # them on a timer, so every replica is identical and interchangeable and none
+  # is authoritative. Two so a node drain is not an outage on the money path.
+  replicas: 2
+  selector:
+    matchLabels: {app: egress}
+  strategy:
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  template:
+    metadata:
+      labels: {app: egress}
+    spec:
+      serviceAccountName: egress
+      # Mounted because egress asks the API server to authenticate its callers.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: egress
+          image: ghcr.io/hanzoai/egress:v0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8080}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            # KMS is reached in-cluster, not at its public name: the public host
+            # is fronted by a CDN that refuses a server-side POST, so brokering
+            # a machine credential against it fails in a way that looks like a
+            # bad credential.
+            - {name: EGRESS_KMS, value: "http://cloud.hanzo.svc.cluster.local:8000"}
+            - {name: EGRESS_KMS_ENV, value: "prod"}
+            - {name: EGRESS_CLUSTER, value: "https://kubernetes.default.svc"}
+            # Callers must have their token minted FOR this service. A token
+            # addressed to anything else is refused, which is what stops one
+            # workload replaying another's.
+            - {name: EGRESS_AUDIENCE, value: "egress"}
+            # Who may spend, on what. Written out so it can be read.
+            - name: EGRESS_GRANTS
+              value: >-
+                system:serviceaccount:hanzo:cloud=openrouter;
+                system:serviceaccount:zen:zen=openrouter;
+                system:serviceaccount:enso:enso=openrouter
+            - {name: EGRESS_REFRESH, value: "60s"}
+            # The identity egress reads its own credentials with. It is a MEMBER
+            # of the org holding them: the secrets plane requires admin scope to
+            # write, so this identity can read the credential and cannot change
+            # it. Rotation is a superadmin act, not this pod's.
+            - name: EGRESS_KMS_ID
+              valueFrom: {secretKeyRef: {name: egress-kms, key: clientId}}
+            - name: EGRESS_KMS_SECRET
+              valueFrom: {secretKeyRef: {name: egress-kms, key: clientSecret}}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+          readinessProbe:
+            # False until a credential is actually held, so a replica that
+            # cannot reach KMS is never sent a call it would have to refuse.
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 256Mi}

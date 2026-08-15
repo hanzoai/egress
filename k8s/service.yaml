@@ -1,0 +1,14 @@
+# ClusterIP only. There is deliberately no Ingress, no IngressRoute and no
+# LoadBalancer: egress is reachable from inside the cluster or not at all.
+# Publishing it would put a credential-spending door on the internet.
+apiVersion: v1
+kind: Service
+metadata:
+  name: egress
+  namespace: hanzo-egress
+  labels: {app: egress}
+spec:
+  type: ClusterIP
+  selector: {app: egress}
+  ports:
+    - {name: http, port: 80, targetPort: http, protocol: TCP}

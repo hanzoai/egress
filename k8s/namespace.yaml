@@ -1,0 +1,13 @@
+# Egress gets its own namespace so the default-deny policy and the restricted
+# pod standard below apply to exactly one workload. Enforcing either inside a
+# shared namespace would mean either weakening it to suit the neighbours or
+# breaking them.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hanzo-egress
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

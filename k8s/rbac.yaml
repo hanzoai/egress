@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: egress
+  namespace: hanzo-egress
+---
+# Egress asks the cluster to authenticate its callers' tokens. That is exactly
+# what system:auth-delegator grants — create TokenReview and SubjectAccessReview
+# — and nothing else: no read of Secrets, Pods or any other object. It is the
+# same grant every extension API server holds.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: egress-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: egress
+    namespace: hanzo-egress
