@@ -5,7 +5,7 @@ go 1.26.5
 require (
 	github.com/hanzoai/ai v1.833.52
 	github.com/hanzoai/jwt v0.0.0-20260806093505-517c034b1826
-	github.com/hanzoai/kms/sdk/go v1.1.1
+	github.com/hanzoai/kms/sdk/go v1.1.2
 	github.com/luxfi/keys v1.4.2
 	github.com/valyala/fasthttp v1.72.0
 	github.com/zap-proto/http v0.3.5
@@ -14,6 +14,7 @@ require (
 
 require (
 	dario.cat/mergo v1.0.2 // indirect
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
 	github.com/ThinkInAIXYZ/go-mcp v0.2.24 // indirect
@@ -80,15 +81,16 @@ require (
 	github.com/leverly/ChatGLM v1.2.0 // indirect
 	github.com/luxfi/accel v1.2.4 // indirect
 	github.com/luxfi/address v1.1.1 // indirect
+	github.com/luxfi/age v1.6.0 // indirect
 	github.com/luxfi/cache v1.3.1 // indirect
 	github.com/luxfi/constants v1.6.2 // indirect
-	github.com/luxfi/container v0.2.1 // indirect
+	github.com/luxfi/container v0.2.2 // indirect
 	github.com/luxfi/crypto v1.20.2 // indirect
-	github.com/luxfi/geth v1.20.1 // indirect
+	github.com/luxfi/geth v1.20.2 // indirect
 	github.com/luxfi/go-bip32 v1.1.0 // indirect
 	github.com/luxfi/go-bip39 v1.2.0 // indirect
 	github.com/luxfi/ids v1.3.2 // indirect
-	github.com/luxfi/kms v1.11.4 // indirect
+	github.com/luxfi/kms v1.12.15 // indirect
 	github.com/luxfi/log v1.6.0 // indirect
 	github.com/luxfi/math v1.5.1 // indirect
 	github.com/luxfi/math/big v0.1.0 // indirect
