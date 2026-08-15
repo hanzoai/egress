@@ -1,0 +1,100 @@
+name: Release
+
+# A semver tag publishes one static linux/amd64 binary and its checksum.
+#
+# No container image. Egress runs as one process under systemd on a host we
+# provision, so nothing in the estate would pull one -- an image would add a
+# registry credential and a container runtime to the box holding every provider
+# key, for no consumer. amd64 only, for the same reason: it is the host it runs
+# on.
+#
+# The upload talks to the forge's own API, which is based at /v1 -- NOT
+# /api/v1, which 404s and reads exactly like the API being switched off. The
+# GitHub release actions are not usable here: they target api.github.com, and
+# this is not GitHub.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.1.0). Must already exist.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: hanzo-build-linux-amd64
+    env:
+      GOWORK: off
+      # Runners are in-cluster, so reach the forge by Service rather than back
+      # out through the SSO proxy that fronts git.hanzo.ai.
+      FORGE: http://hanzo-git.hanzo.svc/v1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # The artifact ships only if the suite guarding the credential passes.
+      - run: go test -race -count=1 ./...
+
+      - name: Resolve version
+        id: version
+        run: echo "tag=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+          VERSION: ${{ steps.version.outputs.tag }}
+        run: |
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags="-s -w -X main.version=${VERSION}" \
+            -o dist/egress-linux-amd64 ./cmd/egress
+          (cd dist && sha256sum egress-linux-amd64 > egress-linux-amd64.sha256)
+
+      - name: Publish
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          auth="Authorization: token $TOKEN"
+
+          # Reuse the release if the tag was already published, so a re-run is
+          # not a second half-populated release.
+          id=$(curl -sf -H "$auth" "$FORGE/repos/$REPO/releases/tags/$TAG" \
+               | sed -n 's/.*"id":\([0-9]*\).*/\1/p' | head -1 || true)
+          if [ -z "$id" ]; then
+            id=$(curl -sf -X POST -H "$auth" -H 'Content-Type: application/json' \
+                   -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\"}" \
+                   "$FORGE/repos/$REPO/releases" \
+                 | sed -n 's/.*"id":\([0-9]*\).*/\1/p' | head -1)
+          fi
+          [ -n "$id" ] || { echo "no release id"; exit 1; }
+
+          for f in egress-linux-amd64 egress-linux-amd64.sha256; do
+            curl -sf -X POST -H "$auth" \
+              -F "attachment=@dist/$f" \
+              "$FORGE/repos/$REPO/releases/$id/assets?name=$f" >/dev/null
+          done
+
+          # A release with no asset is the failure this step exists to prevent,
+          # and it is invisible from the release page alone.
+          n=$(curl -sf -H "$auth" "$FORGE/repos/$REPO/releases/$id" \
+              | grep -o '"name":"egress-linux-amd64' | wc -l)
+          [ "$n" -ge 2 ] || { echo "assets did not attach"; exit 1; }
