@@ -28,10 +28,9 @@ If a change breaks one of these it is wrong, regardless of what it improves.
    service, which is the thing being replaced.
 3. **The credential lives in the store and, briefly, in one call's memory.** No
    third copy — no file, no environment variable, no log line.
-4. **Wherever the credential rests, it is not reachable from the process tree it
-   is leaving.** A store served by a caller's own processes, or one that
-   authorizes at org rather than workload granularity, fails this. The store model
-   itself is still open — §8.
+4. **There is no store.** The credential exists only in the memory of a running
+   egress process — set by an authenticated owner at runtime, never persisted, and
+   never readable back. §8.
 5. **Nothing on the wire names a tenant or an upstream.** The tenant comes from
    the verified token; the upstream from this host's configuration. A caller that
    could name either could spend another tenant's key, or have the credential
@@ -70,12 +69,13 @@ typically answers account, usage and **key-management** endpoints — so path
 passthrough would authenticate those with our credential. Naming an operation
 instead makes the reachable set finite and reviewable.
 
-**Credential at rest, protected by something that is not beside it.** The
-classical form is envelope encryption; the platform-delivered form (a `systemd`
-credential, a projected mount) leans on the platform instead. Which of those
-egress uses is the open question in §8. What the pattern demands either way is
-that reaching the resting place is not the same as reaching the running process,
-and that the value is never in an environment variable.
+**Sealed-at-boot, unsealed by a human.** The classical form of this pattern is a
+vault that starts sealed and holds nothing usable until an operator unseals it,
+after which the secret lives in memory alone. *Ours:* the same shape without the
+vault — egress starts holding nothing, an owner writes the credential at runtime,
+and it is never persisted. What the pattern buys is that an attacker who obtains
+everything at rest obtains nothing. What it costs is that a cold start needs a
+person. §8.
 
 **Composed, not rewritten.** The provider dialects are imported from
 `hanzoai/ai` — `model.GetModelProvider` builds a dialect from a type and a
@@ -355,8 +355,8 @@ through our meter, cannot take the credential) · **Low** · **None**.
 |---|---|---|---|---|
 | 1 | Code execution co-located with a caller, reading its environment | **Total** | **Bounded** | The credential is not in any caller's environment. Co-located code holding a valid token can still *call* egress — metered, rate-limited, attributed, and confined to its own tenant. |
 | 2 | Compromised sibling process of a caller | **Total** | **Bounded** | As above. |
-| 3 | A caller reading the store directly | **Total** | **depends on §8** | Closed only if the store is unreachable from the callers — by being in-process, by being platform-delivered, or by an external plane that authorizes per workload and is not co-located with its readers. An external plane that grants at org granularity does **not** close it. This is the row the store choice decides. |
-| 3b | The credential at rest — disk, snapshot, backup or replica theft | n/a (new) | **Low** | Under any option, protected by something not stored beside it. Defends the disk; does not defend a running process — that is row 8. |
+| 3 | A caller reading the store directly | **Total** | **None** | There is no store to read. This is not an access-control claim that has to hold — it is the absence of the thing the claim would protect. |
+| 3b | The credential at rest — disk, snapshot, backup or replica theft | **High** | **None** | No at-rest copy exists. Disk encryption still covers everything else on the host; it is not what protects the credential. |
 | 4 | Human or CI reading cluster Secrets | **Total** — base64 is not encryption | **None** | No Secret holds a provider credential. |
 | 5 | Image or registry theft | **Low** | **None** | Verified in CI rather than asserted: export every layer, grep for credential prefixes and live values, fail the build on a hit. |
 | 6 | Node disk or volume snapshot | **High** | **Low** | Nothing durable holds the credential; disk encryption covers the powered-off case. Residual is live-memory capture — row 8. |
@@ -365,7 +365,8 @@ through our meter, cannot take the credential) · **Low** · **None**.
 | 9 | Cross-tenant spend | **Total** where keys are shared by configuration | **None** | The custody path is built from the verified token and cannot be spelled by a caller. The strongest property in the design. |
 | 10 | Stolen caller token | **Total** — a leaked provider key spends off our network, invisibly, until a multi-vendor rotation | **Bounded** | A stolen IAM token is short-lived, audience-bound, and buys only metered calls inside its own tenant. |
 | 11 | Credential echoed in an upstream error | **High** — providers quote rejected keys back, whole or in pieces | **None** | An error reaching a caller or a log has every stretch it shares with the credential taken out, in whatever shape the key travelled: whole, masked to a prefix and last four, truncated, base64, escaped. |
-| 12 | Compromised store | **Total** | **Total** | Inherent — the store holds everything. Under an in-process store this row collapses into row 8, trading a second attack surface for a second boundary that would have had to be proven; under an external one they stay distinct and the plane's own authorization has to hold. Either way, bounded by keeping it small, writes admin-scoped, reads audited, and loss capped by a vendor-side spend limit. |
+| 12 | Compromised store | **Total** | **None** | There is no store. What remains is row 8 — the running process — and a vendor-side spend cap is the only control that survives it. |
+| 12b | Cold start with every replica down | n/a | **Availability only** | No machine path exists to restore the credential; a named owner must set it. Deliberate, and the reason §8 calls this an operating requirement with a rehearsed two-person runbook. |
 | 13 | Vendor-side escalation through the broker | n/a (new) | **None** | No caller supplies a path or a URL. Account, usage and key-management endpoints are unreachable by construction — there is no route that would carry a caller there. |
 | 14 | An entitled-looking caller burning spend | **Total** (no limit) | **Bounded** | Rate limit per principal, meter per call, attribution in every log line. Entitlement itself is not checked — §5. |
 | 15 | On-path adversary on the leg to the store | **Total** — an enrolled key crosses the network as it is written and again on every read | **None for disclosure** | Bodies are sealed under an X25519 + ML-KEM-768 session, and each request names that session and is honoured only there. Agreeing keys with both sides no longer helps: a request written for one channel cannot be re-signed for another. What remains is that egress cannot yet tell the real store from something that answers in its place — §9. |
@@ -377,60 +378,117 @@ who owns the host or the store.
 
 ---
 
-## 8. Where the credential lives — OPEN
+## 8. Where the credential lives — DECIDED: nowhere
 
-**This is not decided, and this document will not pretend otherwise.** The store
-model is the one load-bearing choice still outstanding, it belongs to the service
-owner, and three directions currently exist in and around the tree. Recording the
-options and their costs is useful; recording a verdict nobody gave is not.
+**There is no store.** The credential exists in one place only: the memory of a
+running egress process. Not in a secrets plane, not in an embedded store, not in
+an orchestrator secret, not in an environment variable, not on disk.
 
-**What is actually in the tree today** (verified, not assumed): `kms.go` imports
-`hanzoai/kms/sdk/go/kmsclient` and dials an external store; `deploy/` is a
-`systemd` unit, not a Kubernetes manifest; and `grep Embed(` returns nothing —
-there is no embedded-store code at all.
+This is the decision, and it is what makes the rest of the design simple. Every
+other option answers the question *"who is allowed to read the store?"* — and that
+question is where these designs fail, because the answer has to be enforced by
+something, and that something is usually weaker than assumed. Deleting the store
+deletes the question. A developer with full access to the platform finds nothing
+to read, because there is nothing.
 
-| Option | Shape | Buys | Costs |
-|---|---|---|---|
-| **A — external store** (in the tree now) | egress dials a secrets plane over the network | one store for the estate; rotation and audit already built; egress stays stateless | only as strong as that plane's authorization and location. If it is served by a caller's own process tree, or authorizes at org rather than workload granularity, the credential stays reachable from the place it was taken from — see §7 rows 3 and 12 |
-| **B — credential delivered to the process** | a file the platform hands egress: `systemd` `LoadCredential=` on a host, a projected mount under an orchestrator | simplest; egress stays **stateless**, so replicas are interchangeable and scaling needs no runbook; keeps the value out of the environment, so it is not in `/proc/self/environ`, not inherited by children, not in crash dumps; rotation is one write with no restart | at-rest protection is the platform's, not application-layer. No envelope, no per-secret policy, no read audit |
-| **C — embedded store** | egress runs the store in-process | application-layer sealing without a second service; no network read on the money path | makes egress **stateful**, which is the thing that turns "add replicas" into an operation with a runbook. Four preconditions below, none currently solved |
+It also keeps egress **stateless**, which is the property a hot-path proxy needs
+most: replicas are identical and interchangeable, scaling is horizontal by
+default, a suspect replica is deleted rather than investigated, and there is no
+backup, no restore, no writer fence and no divergence between replicas.
 
-**If C is chosen, these must be solved first** — raised by the implementer, and
-they are design blockers rather than details:
+### How the credential gets in
 
-1. SQLCipher refuses to decrypt into persistent storage, so the working set needs
-   tmpfs.
-2. Egress's envelope key must be distinct from the calling platform's, or the
-   separation is nominal.
-3. It contradicts the stateless claim this design makes elsewhere, so either the
-   claim or the choice has to give.
-4. Single-writer-per-org SQLite means a seeded credential lands in exactly one
-   replica, which breaks any deployment above one pod.
+An **admin-scoped runtime write**, authenticated by IAM and restricted to the two
+named platform owners. This is the existing write-only enrolment path scoped
+down — not a new surface:
 
-**What does not depend on the choice.** The security argument in §9 and the
-threat model in §7 are about *reachability*, not about where bytes rest, and they
-hold under A, B or C:
+- the caller must hold a valid IAM token for a named owner account on the
+  platform domain; nothing else may write;
+- the value is **held in memory and never persisted** — no file, no store, no
+  copy;
+- there is **no read route**, for anyone. Write-only after enrolment, which is
+  already the rule for a customer's key and now applies to the platform's own.
 
-1. the credential is **absent from every application's environment** and from any
-   secret an application can read;
-2. it exists only where egress runs, under its own access control, with no
-   developer grants;
-3. the image is **distroless with no shell**, so `exec` has nothing to run;
-4. egress runs **no user code** — no code-execution route, no sandboxes, no
-   plugins, nothing that evaluates caller input;
-5. **no route returns a credential**, so possession cannot be requested, only
-   spent.
+Rotation is the same act: write a new value. There is no old value to retrieve,
+compare or clean up.
 
-Those five are the whole reason the cutover is worth doing, and none of them
-improves or degrades by picking A, B or C. Which is also the argument for not
-letting this choice block the work that does depend on it: the must-fixes in §9
-are required under every option.
+### How a replica that just booted gets it
 
-**Note on at-rest sealing generally.** It defends disk, snapshot and backup
-theft. It does **not** defend against anyone who can reach the running process,
-which is the threat this service exists to close. So sealing is worth having and
-is not the control that stops key theft — a reason to sequence it deliberately
-rather than to treat it as the deciding factor.
+A replica starts **holding nothing** and is therefore **unready** — kept out of the
+load balancer until it holds the credential. That is deliberate: a replica without
+a credential reduces capacity, and must never serve an error it could have
+declined to receive.
+
+It then obtains the credential from a peer, and the peer answers **only** if the
+newcomer proves it is egress:
+
+- **on provisioned hosts:** mutual TLS between replicas, against a private CA
+  whose certificate lives on the encrypted root. The host has no interactive
+  access, so possession of that certificate *is* the attestation.
+- **under an orchestrator:** the joining replica presents a projected
+  ServiceAccount token minted for a peer-specific audience, and the peer verifies
+  it against the API server. A foreign workload cannot forge one.
+
+Either mechanism is a standard identity check. **Neither is optional**, and the
+reason is worth stating plainly: a replica that can *ask* for the credential turns
+this into a key-distribution service, and its entire security becomes "can
+something else join?" Peer handoff without attestation is strictly worse than no
+peer handoff at all.
+
+### Cold start is an operating requirement, not a fallback
+
+If every replica is down at once — a full host-pool replacement, a region event —
+**a human logs in and sets the credential**. There is no machine path, by design.
+
+This is the trade being made deliberately: the design buys *no unattended process
+can retrieve this credential*, and pays for it in a rare manual step. That is the
+right trade here. But it must be treated as a **designed operating requirement**,
+not as a safety net:
+
+- it needs a **written runbook**, not tribal knowledge;
+- it needs **two people** who can execute it, independently, at any hour;
+- it needs to be **rehearsed**, because a procedure first attempted during an
+  outage is not a procedure;
+- "we can always just log in and set it" is the thing that must never be said to
+  justify skipping the above.
+
+### What this trades away
+
+**At-rest protection of the credential becomes moot rather than strong** — there
+is no at-rest copy to protect. Full-disk encryption still earns its place for
+everything else on the host (snapshot, detached volume and password-reset paths
+all yield ciphertext), but it is not what protects the credential, and it never
+protects a running host.
+
+**There is no per-secret policy and no read audit from a store**, because there is
+no store to provide them. What replaces them is that reads do not happen: the
+value is written once and only ever spent.
+
+**Availability is coupled to a human at cold start.** Named above, deliberate,
+bounded.
+
+### The irreducible
+
+A running egress holds the credential in cleartext at the moment it signs a
+request. Anyone with root on that host can read process memory. No design that
+makes outbound calls on a caller's behalf avoids this — the credential has to
+exist when it is used.
+
+What this design buys is that **this is the only way to get it**. No store, no
+secret, no environment, no disk, no file, no read route. That is a large and real
+reduction, and it is not "unstealable."
+
+The one control that survives even root-on-host is **vendor-side**: a spend cap
+and an expiry on the credential itself, set at the provider. It bounds the loss
+when every control here has failed, and it is the only thing that does.
+
+### Reconcile
+
+This supersedes the external-store direction currently on main — the client that
+dials a secrets plane is not needed under this decision and should come out with
+the reconcile in step 1 of §12. The two resolution defects in §9 remain in force
+regardless: they are properties of how a credential is *resolved*, not of where it
+rests, and "no store" does not retire either of them.
 
 ---
 
@@ -581,11 +639,11 @@ to 401.
    only it can be adopted by a caller flipping one base URL. Delete the other
    before anything deploys: two implementations of a credential boundary is the
    condition where a fix lands in one and not the other.
-2. **Egress deployed and holding the credential**, one provider, by whichever
-   mechanism §8 settles on. The value is written once, by a human, from their own
-   machine — never through a transcript, an image or a manifest. Confirm the
-   artifact actually published before assuming a green build shipped anything.
-   Serving proven on synthetic traffic.
+2. **Egress deployed, then the credential set at runtime** by a named owner over
+   the admin write path — once, from their own machine, never through a
+   transcript, an image or a manifest. Replicas stay unready until they hold it.
+   Confirm the artifact actually published before assuming a green build shipped
+   anything. Serving proven on synthetic traffic.
 3. **First consumer repointed** by base URL only — values, no code — and observed
    carrying real traffic. This is the proof step and it reverts instantly.
 4. **Remaining consumers repointed**, including any balance probe and any status
@@ -607,9 +665,9 @@ to 401.
 Rollback before step 5 is a configuration change; after, it is restoring the
 injection — a redeploy. That asymmetry is why steps 3 and 4 are not optional.
 
-What each option removes from this list differs — a platform-delivered credential
-needs no plane stood up and no grant scoped; an external one needs both, and needs
-them verified rather than assumed. That difference is the substance of §8.
+Note what is absent from this list: no secrets plane to stand up, no grant to
+scope, no store to seed, back up or restore. That removal is the decision in §8,
+and it is why this order is as short as it is.
 
 **OAuth application credentials do not belong here.** A provider key is a bearer
 credential presented on every call — what a broker can hold on a caller's behalf.
