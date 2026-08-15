@@ -1,0 +1,28 @@
+# Canonical CI/CD config for hanzoai/egress — the one file both the hanzoai/ci
+# reusable (.hanzo/workflows/build.yml) and platform.hanzo.ai read.
+#
+# No `images:`, deliberately. Egress runs as one process under systemd on a host
+# we provision, off the managed cluster, because a DO API token reaches every
+# pod, secret and volume in DOKS and every DO team member holds one. Nothing in
+# the estate would pull an image, so publishing one would add a registry
+# credential and a container runtime to the box holding every provider key, for
+# no consumer. The release artifact is a static binary — see
+# .hanzo/workflows/release.yml and deploy/.
+#
+# No `deploy:` either, for the reason every repo here gives: rolling an artifact
+# out is a separate reviewed act, not something the build does to itself.
+
+# The version floor. imgver takes max(this, whatever is already published) and
+# adds a patch, so this is the number a human moves.
+version: 0.1.0
+
+test:
+  - name: go
+    # -race because the credential cache is read by every in-flight call and
+    # rewritten by the refresh. That is the one place a data race hands two
+    # callers each other's provider key, and it is invisible to a plain build.
+    run: |
+      set -e
+      go build ./...
+      go vet ./...
+      go test -race -count=1 ./...
