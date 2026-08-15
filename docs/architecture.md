@@ -28,8 +28,9 @@ If a change breaks one of these it is wrong, regardless of what it improves.
    service, which is the thing being replaced.
 3. **The credential lives in the store and, briefly, in one call's memory.** No
    third copy — no file, no environment variable, no log line.
-4. **The store is not served by the process tree the credential is leaving.**
-   Otherwise invariant 1 is theatre. §8.
+4. **Egress owns its own store.** The credential lives in egress's embedded,
+   sealed store — never in an external secrets plane, and never in a store served
+   by the process tree the credential is leaving. §8.
 5. **Nothing on the wire names a tenant or an upstream.** The tenant comes from
    the verified token; the upstream from this host's configuration. A caller that
    could name either could spend another tenant's key, or have the credential
@@ -68,8 +69,15 @@ typically answers account, usage and **key-management** endpoints — so path
 passthrough would authenticate those with our credential. Naming an operation
 instead makes the reachable set finite and reviewable.
 
-**Envelope encryption at rest.** The stored credential is ciphertext under a key
-not stored beside it. *Ours:* KMS's envelope.
+**Sealed store, owned by the process that spends from it.** The credential is
+ciphertext at rest under a key not stored beside it. *Ours:* `kms.Embed()` from
+`hanzoai/kms`, running **in-process inside egress** over its own encrypted ZapDB.
+Deviation from the usual split, and deliberate: custody and the decision to spend
+live in one service rather than two. A separate secrets plane would add a second
+deploy, a second identity to get right, and a network read on the money path —
+and, if that plane were ever served by a caller's own process tree, would hand the
+credential straight back to the thing it was taken from. One service, one
+boundary.
 
 **Composed, not rewritten.** The provider dialects are imported from
 `hanzoai/ai` — `model.GetModelProvider` builds a dialect from a type and a
@@ -326,12 +334,12 @@ Two honest limits, both of which must be said next to it:
   disk, not a live process, and the credential lives in the live process. The
   controls that matter there are no interactive access, a small surface, and
   replacement rather than repair.
-- **It buys nothing while the store stays inside the blast radius.** If the
-  secrets plane is served from within the cluster being escaped — worse, by the
-  very process tree the credential is leaving — then relocating the *reader*
-  moves nothing. The boundary has to move where the **store** is, and
-  consistently. This is invariant 4 and it is the one open item that can void the
-  rest (§8).
+- **Relocating the reader while the store stays put buys nothing.** If a
+  credential is read from a plane served inside the cluster being escaped — worse,
+  by the very process tree it is leaving — then moving the *reader* moves nothing.
+  The boundary has to move where the **store** is. Under the embedded model that
+  holds by construction: egress carries its store with it, so wherever egress
+  runs, the credential is already there and nowhere else (§8).
 
 Also note that a host outside the cluster but inside the same cloud account is
 not outside a compromise of that account. Escaping that means a different
@@ -349,7 +357,8 @@ through our meter, cannot take the credential) · **Low** · **None**.
 |---|---|---|---|---|
 | 1 | Code execution co-located with a caller, reading its environment | **Total** | **Bounded** | The credential is not in any caller's environment. Co-located code holding a valid token can still *call* egress — metered, rate-limited, attributed, and confined to its own tenant. |
 | 2 | Compromised sibling process of a caller | **Total** | **Bounded** | As above. |
-| 3 | A caller reading the store directly | **Total** | **None** | Only if the store authorizes per workload and is not co-located with its readers. In-process authorization that cannot distinguish co-located callers is not an authorization boundary. §8. |
+| 3 | A caller reading the store directly | **Total** | **None** | Structural under the embedded model: the store is in-process inside egress, exposes no read route to anyone, and no application shares that process. There is no external plane to reach and no cross-service grant to get wrong. §8. |
+| 3b | Egress's store at rest — volume, snapshot or replica theft | n/a (new) | **Low** | Ciphertext under a key held by the process, not stored beside the data. Defends the disk; does not defend a running process — that is row 8. |
 | 4 | Human or CI reading cluster Secrets | **Total** — base64 is not encryption | **None** | No Secret holds a provider credential. |
 | 5 | Image or registry theft | **Low** | **None** | Verified in CI rather than asserted: export every layer, grep for credential prefixes and live values, fail the build on a hit. |
 | 6 | Node disk or volume snapshot | **High** | **Low** | Nothing durable holds the credential; disk encryption covers the powered-off case. Residual is live-memory capture — row 8. |
@@ -358,7 +367,7 @@ through our meter, cannot take the credential) · **Low** · **None**.
 | 9 | Cross-tenant spend | **Total** where keys are shared by configuration | **None** | The custody path is built from the verified token and cannot be spelled by a caller. The strongest property in the design. |
 | 10 | Stolen caller token | **Total** — a leaked provider key spends off our network, invisibly, until a multi-vendor rotation | **Bounded** | A stolen IAM token is short-lived, audience-bound, and buys only metered calls inside its own tenant. |
 | 11 | Credential echoed in an upstream error | **High** — providers quote rejected keys back, whole or in pieces | **None** | An error reaching a caller or a log has every stretch it shares with the credential taken out, in whatever shape the key travelled: whole, masked to a prefix and last four, truncated, base64, escaped. |
-| 12 | Compromised store | **Total** | **Total** | Inherent — the store holds everything. Mitigated by keeping it small, admin-scoped for writes, audited per read, and **not co-located with its readers**. |
+| 12 | Compromised store | **Total** | **Total** | Inherent, and under the embedded model this row **is** row 8: store and spender are one process, so compromising either compromises both. That collapse is deliberate — it trades a second attack surface for a second boundary we would have had to prove. Bounded by keeping the process small, its writes admin-scoped, its reads audited, and its loss capped by a vendor-side spend limit. |
 | 13 | Vendor-side escalation through the broker | n/a (new) | **None** | No caller supplies a path or a URL. Account, usage and key-management endpoints are unreachable by construction — there is no route that would carry a caller there. |
 | 14 | An entitled-looking caller burning spend | **Total** (no limit) | **Bounded** | Rate limit per principal, meter per call, attribution in every log line. Entitlement itself is not checked — §5. |
 | 15 | On-path adversary on the leg to the store | **Total** — an enrolled key crosses the network as it is written and again on every read | **None for disclosure** | Bodies are sealed under an X25519 + ML-KEM-768 session, and each request names that session and is honoured only there. Agreeing keys with both sides no longer helps: a request written for one channel cannot be re-signed for another. What remains is that egress cannot yet tell the real store from something that answers in its place — §9. |
@@ -370,31 +379,60 @@ who owns the host or the store.
 
 ---
 
-## 8. The open dependency that can void the rest
+## 8. The store egress owns
 
-**Invariant 4.** If the secrets plane egress reads from is served by the same
-process tree the credential is being removed from, then after a complete and
-apparently successful cutover the credential is still reachable from that process
-tree — directly, without passing through egress at all. Every improved row in §7
-would be unchanged in reality.
+**Invariant 4.** Provider credentials live in egress's own embedded store —
+`kms.Embed()` over an encrypted ZapDB in egress's data directory. There is no
+external secrets plane in the call path and none in the deploy path.
 
-Two properties are required of the store, and both must be verified rather than
-assumed:
+This is not convenience. An external plane has to be a *separate workload that
+authorizes per identity*, and if it is not — if it is served by a caller's own
+process tree, or if its authorization proves only "this is one of ours" without
+proving *which* one — then the credential stays reachable from the very place it
+was taken from, and every improved row in §7 is fiction. Owning the store removes
+that class of failure instead of requiring it to be verified on someone else's
+schedule.
 
-1. **It is a separate workload** from the applications that call egress, with its
-   own envelope key not present in their environment.
-2. **It authorizes per workload.** A store whose authorization returns success
-   for any co-located peer, or that proves only "this is one of ours" without
-   proving *which*, is not an authorization boundary. The grant on the provider
-   credentials must name egress's identity and no one else's — verified denied
-   for every application identity and every human, including administrators.
+It also answers the obvious simplification, "why not skip the broker and let each
+application read the store directly?" — because in-process reading *by an
+application* is not an authorization boundary. Egress is the one process that may
+read, and it exists to spend rather than to serve reads.
 
-This is also the answer to the obvious simplification, "why not skip the broker
-and have each application read the store directly?" — because in-process reading
-is not an authorization boundary.
+**What this costs, stated plainly.** Egress becomes stateful. A replica holds
+durable ciphertext rather than only a cached value, so:
 
-Until both hold, egress can be built, deployed and proven serving, but the
-credentials have not moved and the old injection must stay.
+- **backup and restore** are ours to own, and losing the store means re-enrolling
+  every credential — recoverable, because provider keys rotate, but an
+  availability event rather than a non-event;
+- **horizontal scale needs one writer.** Reads scale freely; writes must be
+  fenced so two replicas cannot diverge. `hanzoai/kms` ships this — a Kubernetes
+  Lease writer-fence with a primary/follower split and age-encrypted incremental
+  replication. Use it rather than inventing one;
+- "delete a suspect replica rather than investigate it" is **no longer free**:
+  the replica held the store, so replacement means restore, not reschedule.
+
+**What sealing does and does not buy.** At-rest sealing uses an encryption key
+supplied to the process. That defends **disk, snapshot and backup theft** —
+someone who walks off with the volume or the replica gets ciphertext. It does
+**not** defend against a developer, because anyone who can reach the running
+process does not need the disk.
+
+**What actually stops a developer taking the key** is reachability, not
+cryptography — five properties, each independently checkable:
+
+1. the credential is **absent from every application's environment** and from any
+   Secret an application namespace can read;
+2. it exists only in **egress's own namespace**, with its own RBAC and no
+   developer grants;
+3. the image is **distroless with no shell**, so `exec` into the pod has nothing
+   to run;
+4. egress runs **no user code** — no code-execution route, no sandboxes, no
+   plugins, nothing that evaluates caller input;
+5. **no route returns a credential**, so possession cannot be requested, only
+   spent.
+
+Those five hold with or without sealing, and they are what the cutover buys. Do
+not let sealing gate it.
 
 ---
 
@@ -528,27 +566,40 @@ listener. No network, no store.
 Strict order. Reversing the last two steps takes every SKU that provider serves
 to 401.
 
-1. **The store is separated** from the process tree the credential is leaving,
-   and authorizes per workload (§8).
-2. **The grant is scoped** to egress's identity; tests 25–27 pass.
-3. **Egress deployed**, one provider. Serving proven on synthetic traffic; tests
-   3–24 pass.
-4. **Every consumer of that credential repointed**, deployed, and observed
-   carrying real traffic — inference *and* any balance probe *and* any status
-   surface. The old injection still in place; this step is reversible by
-   configuration, which is the point. Enumerate consumers first: a missed one does
-   not fail here, it fails at step 5, after the credential is gone.
-5. **Only then** remove the credential from the injection, and apply any
-   prohibition on reaching the vendor directly.
-6. **Rotate the value** at the provider and write it once into the store, from a
-   human's own machine — never through a transcript, an image or a manifest. This
-   makes any prior exposure of the old value moot, and comes last because it is
-   only safe once the value lives in one place.
-7. **Repeat 3–6 per remaining provider.** One at a time, each independently
+1. **Reconcile to one implementation** — the byte-forwarding proxy, not the typed
+   call shape. Only the former carries tool calls, vision and arbitrary JSON, and
+   only it can be adopted by a caller flipping one base URL. Delete the other
+   before anything deploys: two implementations of a credential boundary is the
+   condition where a fix lands in one and not the other.
+2. **Egress deployed with its embedded store seeded**, one provider. The
+   credential is written once, by a human, from their own machine, through
+   egress's own admin write path — never through a transcript, an image or a
+   manifest. Confirm the image actually published before assuming a green build
+   shipped anything. Serving proven on synthetic traffic.
+3. **First consumer repointed** by base URL only — values, no code — and observed
+   carrying real traffic. This is the proof step and it reverts instantly.
+4. **Remaining consumers repointed**, including any balance probe and any status
+   surface. The old injection stays in place throughout. Enumerate consumers
+   first: a missed one does not fail here, it fails at step 5, after the
+   credential is gone.
+5. **Only then** remove the credential from the injection, and only then apply any
+   prohibition on reaching the vendor directly. Both belong at this step and
+   neither belongs earlier — the prohibition blocks the old direct path, so
+   applying it before the repoint is an outage.
+6. **Rotate the value** at the provider and write it once into egress's store.
+   This makes any prior exposure of the old value moot, and comes last because it
+   is only safe once the value lives in one place. Set the vendor-side **spend cap
+   and expiry** in the same visit — that cap is the only control that survives a
+   compromised egress.
+7. **Repeat 2–6 per remaining provider.** One at a time, each independently
    reversible.
 
 Rollback before step 5 is a configuration change; after, it is restoring the
 injection — a redeploy. That asymmetry is why steps 3 and 4 are not optional.
+
+Note what is *absent* under the embedded-store model: no external secrets plane to
+stand up, no cross-service grant to scope, no second identity to prove. That
+removal is the point.
 
 **OAuth application credentials do not belong here.** A provider key is a bearer
 credential presented on every call — what a broker can hold on a caller's behalf.
