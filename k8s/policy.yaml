@@ -1,0 +1,71 @@
+# Network policy is written as Cilium policy throughout, because two of the
+# things that need saying — "the cluster API server" and "this vendor by name" —
+# cannot be said in a plain NetworkPolicy, and expressing half the rules in one
+# dialect and half in another leaves nobody able to read the whole boundary.
+#
+# The credential no longer living in a caller is the control. These policies are
+# the second latch: they make the single path structural, so a credential that
+# somehow reached a pod again still could not be spent from there.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: egress
+  namespace: hanzo-egress
+spec:
+  endpointSelector:
+    matchLabels: {app: egress}
+  ingress:
+    # Only the namespaces that hold a granted workload may open a connection at
+    # all. The grant table inside egress is the authority on who may spend; this
+    # keeps everything else from reaching the door to try.
+    - fromEndpoints:
+        - matchLabels: {"k8s:io.kubernetes.pod.namespace": hanzo}
+        - matchLabels: {"k8s:io.kubernetes.pod.namespace": zen}
+        - matchLabels: {"k8s:io.kubernetes.pod.namespace": enso}
+      toPorts:
+        - ports: [{port: "8080", protocol: TCP}]
+  egress:
+    # Name resolution.
+    - toEndpoints:
+        - matchLabels:
+            {"k8s:io.kubernetes.pod.namespace": kube-system, "k8s:k8s-app": kube-dns}
+      toPorts:
+        - ports: [{port: "53", protocol: UDP}, {port: "53", protocol: TCP}]
+          rules:
+            dns: [{matchPattern: "*"}]
+    # Asking the cluster to authenticate a caller's token.
+    - toEntities: [kube-apiserver]
+    # Reading its own credentials from the secrets plane.
+    - toEndpoints:
+        - matchLabels: {"k8s:io.kubernetes.pod.namespace": hanzo, "k8s:app": cloud}
+      toPorts:
+        - ports: [{port: "8000", protocol: TCP}]
+    # The one vendor it may reach, by name. Adding a provider means adding it
+    # here as well as to the table in the binary — deliberately two places,
+    # because reaching a new third party should be visible in the network
+    # boundary and not only in code.
+    - toFQDNs:
+        - {matchName: "openrouter.ai"}
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
+---
+# The other half: nothing except egress may reach the vendor directly.
+#
+# enableDefaultDeny is false on purpose and MUST stay false. A clusterwide policy
+# that enabled it would put every endpoint in the cluster into default-deny for
+# egress, which is a total outage. This adds one prohibition and changes nothing
+# else about what any workload may do.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: vendor-direct-deny
+spec:
+  endpointSelector:
+    matchExpressions:
+      - {key: app, operator: NotIn, values: [egress]}
+  enableDefaultDeny:
+    egress: false
+    ingress: false
+  egressDeny:
+    - toFQDNs:
+        - {matchName: "openrouter.ai"}

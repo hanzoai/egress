@@ -1,0 +1,41 @@
+name: CI
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+jobs:
+  test:
+    runs-on: [self-hosted, linux, amd64]
+    env:
+      GOPRIVATE: github.com/hanzoai/*,github.com/luxfi/*,github.com/zap-proto/*
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Configure private cross-org module auth
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: git config --global url."https://x-access-token:${GH_PAT}@github.com/".insteadOf "https://github.com/"
+      - run: go mod download
+      - run: go vet ./...
+      # The suite asserts the properties this service exists for — the credential
+      # reaches only the vendor, no unproven caller spends, only listed
+      # operations are reachable — so it runs with the race detector and its
+      # failure blocks the image.
+      - run: go test -race -count=1 ./...
+
+  docker:
+    needs: test
+    if: github.event_name != 'pull_request'
+    uses: hanzoai/.github/.github/workflows/docker-build.yml@main
+    with:
+      image: ghcr.io/hanzoai/egress
+      platforms: "linux/amd64"
+    secrets: inherit
