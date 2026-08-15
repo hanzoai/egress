@@ -357,12 +357,12 @@ through our meter, cannot take the credential) · **Low** · **None**.
 | 8 | **Compromised egress process** | n/a | **Total, irreducible** | §10. |
 | 9 | Cross-tenant spend | **Total** where keys are shared by configuration | **None** | The custody path is built from the verified token and cannot be spelled by a caller. The strongest property in the design. |
 | 10 | Stolen caller token | **Total** — a leaked provider key spends off our network, invisibly, until a multi-vendor rotation | **Bounded** | A stolen IAM token is short-lived, audience-bound, and buys only metered calls inside its own tenant. |
-| 11 | Credential echoed in an upstream error | **High** — providers quote rejected keys back | **Low** | Errors are scrubbed of the credential before they reach a caller or a log. Partial echoes are the residual — §9. |
+| 11 | Credential echoed in an upstream error | **High** — providers quote rejected keys back, whole or in pieces | **None** | An error reaching a caller or a log has every stretch it shares with the credential taken out, in whatever shape the key travelled: whole, masked to a prefix and last four, truncated, base64, escaped. |
 | 12 | Compromised store | **Total** | **Total** | Inherent — the store holds everything. Mitigated by keeping it small, admin-scoped for writes, audited per read, and **not co-located with its readers**. |
 | 13 | Vendor-side escalation through the broker | n/a (new) | **None** | No caller supplies a path or a URL. Account, usage and key-management endpoints are unreachable by construction — there is no route that would carry a caller there. |
 | 14 | An entitled-looking caller burning spend | **Total** (no limit) | **Bounded** | Rate limit per principal, meter per call, attribution in every log line. Entitlement itself is not checked — §5. |
-| 15 | On-path adversary on the leg to the store | **Total** — an enrolled key crosses the network as it is written and again on every read | **Bounded** | Every request is an ML-DSA-65 signed envelope carrying a fresh nonce, so it cannot be forged or replayed and a substituted reply is rejected. The bodies themselves are sealed once the client below is required here. |
-| 16 | On-path adversary on the leg to a provider | **Total** if certificates go unverified | **None** | The outbound client belongs to this process and verifies certificates, with no setting that disables it. An acceptance test points a call at a server presenting an unvouched certificate and asserts nothing was sent. |
+| 15 | On-path adversary on the leg to the store | **Total** — an enrolled key crosses the network as it is written and again on every read | **None for disclosure** | Bodies are sealed under an X25519 + ML-KEM-768 session, and each request names that session and is honoured only there. Agreeing keys with both sides no longer helps: a request written for one channel cannot be re-signed for another. What remains is that egress cannot yet tell the real store from something that answers in its place — §9. |
+| 16 | On-path adversary on the leg to a provider | **Total** if certificates go unverified, or if the route can be chosen | **None** | The outbound client belongs to this process. It verifies certificates with no setting that disables it, and its transport reads no proxy from the environment, so the far end is the upstream in the config and nothing else. An acceptance test points a call at a server presenting an unvouched certificate and asserts nothing was sent. |
 
 Net: the design converts *credential theft* into *bounded, observable,
 tenant-scoped spend*. It does not make the credential unreachable to an adversary
@@ -421,9 +421,15 @@ credential. Under a vendor hang with sustained traffic that is unbounded
 goroutine growth, each one retaining a copy. Bound the number in flight, and push
 for context-taking dialects upstream in `ai`, which is the real fix.
 
-**Scrubbing catches whole-credential echoes only.** Providers sometimes quote a
-prefix or a truncation rather than the whole value. Redacting by pattern, or not
-forwarding upstream error bodies at all, closes the remainder.
+**The store is not authenticated to egress.** A request is answered only by the
+peer it was addressed to, so nothing can collect a credential in transit. The
+converse is open: egress has no name for the real store to check, so something
+that answers in its place can hand back a credential of its own choosing rather
+than read one. The consequences are bounded — a wrong key spends nowhere, and
+the upstream URL is this host's configuration, not the store's — but the store
+should be named, and the shape that fits what the estate already has is the
+store signing its side of the exchange with the identity the caller already
+trusts.
 
 **Health requires a token, and there is no metrics route.** Liveness therefore
 needs a credential to check, and diagnosis depends entirely on what is pushed
@@ -500,7 +506,7 @@ reduction. Not "unstealable".
 | 15 | Claim containing a separator or a parent reference | rejected by the segment allowlist |
 | 16 | Any route that returns a credential | none exists |
 | 17 | Logs and error frames grepped for the live credential | no match |
-| 18 | Upstream error quoting the whole credential | scrubbed before it reaches caller or log |
+| 18 | Upstream error quoting the credential, whole or in pieces | every stretch it shares with the key is taken out before it reaches caller or log |
 | 19 | Rotation: new value written to the store, nothing else changed | spent on the next call; no restart; no failed call |
 | 20 | Post-rotation, replay the old credential against the vendor | rejected — confirms the old value is dead |
 | 21 | Rate limit exceeded for one principal | refused; upstream not called |

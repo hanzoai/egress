@@ -2,6 +2,7 @@ package egress
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"os"
 	"strings"
@@ -233,5 +234,81 @@ func TestTheCredentialIsRemovedFromAnError(t *testing.T) {
 	}
 	if scrub(nil, key) != nil {
 		t.Error("scrub invented an error")
+	}
+}
+
+// TestTheCredentialIsRemovedFromAnErrorInPieces covers what providers
+// actually send back. A rejected key is rarely quoted whole: OpenAI answers
+// with the first segment and the last four characters joined by asterisks,
+// others truncate after a prefix, and a key carried in a basic-auth header
+// comes back base64. Each of those is a piece of the credential, and a piece
+// is worth having.
+func TestTheCredentialIsRemovedFromAnErrorInPieces(t *testing.T) {
+	const key = "sk-proj-4tHhQ2vLm8XnPqRs7WdYbGjK1cZeUfAz9q7x"
+	cases := []struct {
+		name string
+		text string
+		gone []string
+	}{
+		{
+			"masked, as OpenAI sends it",
+			`401 Incorrect API key provided: sk-proj-****************************9q7x. ` +
+				`You can find your API key at https://platform.openai.com/account/api-keys.`,
+			[]string{"sk-proj-", "9q7x"},
+		},
+		{
+			"truncated after a prefix",
+			`invalid api key: sk-proj-4tHhQ2vLm8...`,
+			[]string{"sk-proj-4tHhQ2vLm8"},
+		},
+		{
+			"the last characters alone",
+			`the key ending 9q7x was revoked`,
+			[]string{"9q7x"},
+		},
+		{
+			"whole",
+			`401 invalid api key: ` + key,
+			[]string{key},
+		},
+		{
+			"base64, as a basic-auth header carries it",
+			`401 rejected credential ` + base64.StdEncoding.EncodeToString([]byte(key+":")),
+			[]string{base64.StdEncoding.EncodeToString([]byte(key + ":"))[:24]},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := scrub(errors.New(c.text), key).Error()
+			for _, piece := range c.gone {
+				if strings.Contains(got, piece) {
+					t.Errorf("a piece of the credential travelled in an error: %q is still in %q", piece, got)
+				}
+			}
+			if !strings.Contains(got, "[redacted]") {
+				t.Errorf("scrubbed error lost its shape: %q", got)
+			}
+		})
+	}
+}
+
+// TestAnErrorThatSharesNothingWithTheCredentialIsLeftAlone is the other half.
+// Redacting by what two strings have in common only works if it stops at what
+// they have in common — an error that says nothing about the key has to reach
+// the caller intact, or the scrub has traded a leak for a service nobody can
+// debug.
+func TestAnErrorThatSharesNothingWithTheCredentialIsLeftAlone(t *testing.T) {
+	const key = "sk-proj-4tHhQ2vLm8XnPqRs7WdYbGjK1cZeUfAz9q7x"
+	for _, text := range []string{
+		"429 rate limit exceeded, please retry after 20 seconds",
+		"model gpt-5-turbo does not exist or you do not have access to it",
+		"400 this model's maximum context length is 128000 tokens",
+		"context deadline exceeded",
+		"upstream returned nothing",
+	} {
+		got := scrub(errors.New(text), key)
+		if got.Error() != text {
+			t.Errorf("an error with nothing of the credential in it was changed:\n  before %q\n  after  %q", text, got.Error())
+		}
 	}
 }

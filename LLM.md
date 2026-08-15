@@ -91,8 +91,12 @@ something fills it, so `New` fills it. Two consequences worth keeping: it
 verifies certificates and there is no setting that says otherwise, and its
 timeout is the call deadline, which is the only thing that actually stops a
 dialect — they take no context, so an abandoned call is otherwise still running.
-Do not reach for `proxy.InitHttpClient`: it reads a SOCKS setting and, when it
-finds one, builds a transport that verifies nothing.
+It also carries a transport of its own with `Proxy` nil. Go's default reads
+`HTTP_PROXY` and friends, which would let whoever writes the environment choose
+the far end of a connection carrying a key — the same choice the certificate
+check exists to take away. Do not reach for `proxy.InitHttpClient` either: it
+reads a SOCKS setting and, when it finds one, builds a transport that verifies
+nothing.
 
 **A dialect runs on a goroutine, so it is caught on one.** A vendor client that
 falls over is one refused call. Uncaught it is the whole replica, and every
@@ -113,13 +117,19 @@ identity surrendered its signing key to the collector after its first signature
 not verify. `kms_test.go` guards it; that guard is the only thing standing
 between a dependency bump and finding it in production.
 
-The seal is `hanzoai/kms/sdk/go` v1.1.2, which requires the X25519 + ML-KEM-768
-session before it carries anything and refuses a peer that agrees neither.
-Verified composing here against a local tree; not required yet, because the
-module path resolves through `github.com/hanzoai/kms`, which today redirects to
-an archived repository that cannot take the tag. The tag is on the forge. When
-`hanzoai/kms` exists on GitHub again, `go get github.com/hanzoai/kms/sdk/go@v1.1.2`
-is the whole of it.
+The seal is `hanzoai/kms/sdk/go` v1.1.4. It agrees an X25519 + ML-KEM-768
+session or fails the dial, and every request names that session: the handshake
+derives a binding alongside the session key, computable only by the two
+endpoints that ran it, and the store honours a request only on the channel it
+names. So a party that agrees keys with both sides — which is what an on-path
+adversary does — can read nothing and pass nothing on. There is no field to set
+and no session-less client to construct; `envelope.Build` will not sign a
+request that is addressed to nobody.
+
+What this does not give is the other direction. Egress has no name for the real
+store, so something answering in its place is not yet distinguishable — the
+credential cannot be taken, but a substitute can be offered. See §9 of
+`docs/architecture.md`.
 
 ## Verifying
 
