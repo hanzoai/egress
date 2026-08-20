@@ -24,6 +24,7 @@ type Server struct {
 	custody  *custody
 	limiter  *limiter
 	circuits circuits
+	fetcher  *http.Client
 	log      *slog.Logger
 	app      *zip.App
 }
@@ -62,6 +63,19 @@ func New(cfg Config, store Secrets, log *slog.Logger) (*Server, error) {
 	direct.Proxy = nil
 	proxy.ProxyHttpClient = &http.Client{Timeout: cfg.Deadline, Transport: direct}
 
+	// A cloud call gets the same transport for the same reasons, and one thing
+	// more: it does not follow a redirect. A dialect talks to an endpoint that
+	// answers; a cloud API answers a `Location` too, and following one would let
+	// the far end choose the next far end — the decision the nil Proxy above
+	// exists to keep. Unfollowed, a 3xx is returned to the caller as what it is.
+	s.fetcher = &http.Client{
+		Timeout:   cfg.Deadline,
+		Transport: direct,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
 	s.app = zip.New(zip.Config{AppName: "egress"})
 
 	// The gate is the FIRST thing registered, and it is registered on the app
@@ -82,6 +96,9 @@ func New(cfg Config, store Secrets, log *slog.Logger) (*Server, error) {
 	zip.Post(s.app, "/v1/enroll", s.enroll,
 		zip.WithOperationID("egress_enroll"),
 		zip.WithSummary("Seal a customer's own provider key. It is never readable again."))
+	zip.Post(s.app, "/v1/fetch", s.fetch,
+		zip.WithOperationID("egress_fetch"),
+		zip.WithSummary("Make one cloud API call. The credential stays here."))
 	zip.Get(s.app, "/v1/health", s.health,
 		zip.WithOperationID("egress_health"),
 		zip.WithSummary("Report whether this replica is serving"))
