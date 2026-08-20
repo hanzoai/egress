@@ -82,6 +82,12 @@ type Config struct {
 	// This is deliberately NOT a request field. A caller that could name the
 	// upstream could name its own, and egress would hand it the credential.
 	URLs map[string]string
+
+	// unreadable holds EGRESS_URLS entries that are not provider=url. A typo
+	// there would otherwise be silent, and its symptom — "no upstream is
+	// configured for this provider" at call time — points at the operator who
+	// did configure it, just badly. Check turns it into a refusal to start.
+	unreadable []string
 }
 
 // Flags binds cfg to fs and returns cfg, so a caller can add flags of its own
@@ -100,6 +106,19 @@ func (c *Config) Flags(fs *flag.FlagSet) {
 	fs.StringVar(&c.ClientID, "client-id", env("EGRESS_CLIENT_ID", ""), "machine identity for the http transport")
 	fs.IntVar(&c.RPM, "rpm", envInt("EGRESS_RPM", 600), "calls per minute per principal")
 	fs.DurationVar(&c.Deadline, "deadline", envDuration("EGRESS_DEADLINE", 5*time.Minute), "upstream call deadline")
+	// The environment first, then the flags, so a systemd unit can configure
+	// upstreams without a command line — which is how this host is configured,
+	// and the only way a cloud provider gets an upstream at all. A model dialect
+	// has a built-in endpoint to fall back to; a cloud call has none and is
+	// refused, so a value absent here is a provider egress will not serve.
+	for _, pair := range strings.Split(env("EGRESS_URLS", ""), ",") {
+		if strings.TrimSpace(pair) == "" {
+			continue
+		}
+		if err := (urls{&c.URLs}).Set(pair); err != nil {
+			c.unreadable = append(c.unreadable, pair)
+		}
+	}
 	fs.Var(urls{&c.URLs}, "url", "upstream base URL for one provider, provider=url (repeatable)")
 }
 
@@ -122,6 +141,9 @@ func (c *Config) Check() error {
 	}
 	if c.RPM <= 0 || c.Deadline <= 0 {
 		return errors.New("egress: rpm and deadline must be positive")
+	}
+	if len(c.unreadable) > 0 {
+		return fmt.Errorf("egress: EGRESS_URLS wants provider=url, got %s", strings.Join(c.unreadable, ", "))
 	}
 	for provider, u := range c.URLs {
 		if !strings.HasPrefix(u, "https://") {
