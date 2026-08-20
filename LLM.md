@@ -253,6 +253,40 @@ The nine hanzoai modules visor already imports are all public on GitHub for the
 same reason. `hanzoai/kms` is the exception, and it is why egress's own release
 job cannot fetch its SDK — see the release note below.
 
+## One gateway, and it is not this one
+
+`hanzoai/ai` is the ONLY AI gateway. It calls egress; egress holds the
+credential in KMS, sealed to a host identity. Nothing else reaches a model
+vendor — not a second gateway, not a service with a vendor key in its
+environment, not a hardcoded endpoint in a client.
+
+The rule is not tidiness. A call that goes straight to a vendor is a call egress
+never saw, and a call egress never saw is a call nobody metered — so "one
+gateway" and "billing is correct" are the same sentence. Every extra road is
+both an unmetered spend and a key sitting somewhere a person can read.
+
+Measured against the fleet, the gap is credential material rather than code:
+
+- **Nothing reads `FIREWORKS_API_KEY`.** Zero occurrences in `cloud`'s Go source
+  (its only Fireworks reference is a catalog row keyed on `FIREWORKS_API_BASE`),
+  and zero commits ever touched it in `bot`. The key nevertheless sits in three
+  Secrets and two pod environments. A credential with no reader is pure
+  exposure, and the only action that ends it is revoking at the vendor.
+- **Nine Secrets across three namespaces** carry OpenAI, Anthropic, Fireworks and
+  OpenRouter keys directly.
+- **Two DigitalOcean credentials** exist for one capability, under two names in
+  two stores, so a rotation reaches one and a meter reaches neither.
+
+Deleting a Secret does not remove a key. Several are written by the KMS operator
+— `managed-by: lux-kms-operator` or `manual-kms-sync`, with a
+`kmssecret.secrets.lux.network/source` label naming where they come from — and
+those are rewritten from KMS on their resync interval. The source is KMS; the
+Secret is a copy. Remove the key there, then the copy, then revoke at the vendor.
+
+A caution worth keeping about that check: `kubectl get kmssecrets -A` answering
+with nothing is not evidence a Secret is unmanaged. Confirm the query can see a
+KMSSecret you already know exists before believing an empty answer.
+
 ## Verifying
 
 `GOWORK=off go test -race ./...`. The suite runs against a fake `Secrets` and a
