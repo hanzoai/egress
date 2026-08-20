@@ -46,14 +46,31 @@ They share the door, the ceiling, the custody path, the circuit breaker and
 thing to spend on cost a request struct and a handler, not a second service.
 
 **What a caller may say is the whole design of `Fetch`.** No org and no user —
-those come from the token. No host — that comes from `EGRESS_URLS` on this
-host. No headers — a caller that can write a header can write the one carrying
-the credential. Egress writes every header itself.
+those come from the token. No host — egress decides that. No headers — a caller
+that can write a header can write the one carrying the credential. Egress writes
+every header itself.
 
-**A cloud has no built-in endpoint, and must not grow one.** A model dialect
-falls back to its vendor's URL when `URLs` is silent; a cloud is refused. A
-fallback would mean a provider NAME alone decides where a credential is sent,
-which is the thing the missing `host` field exists to prevent.
+**ONE table says which clouds egress can pay for AND where each answers.**
+`clouds` maps `digitalocean → https://api.digitalocean.com`. Where DigitalOcean
+answers is a fact about DigitalOcean, not a choice a deployment makes, so no
+operator types it — the same shape as a model dialect carrying its vendor's
+endpoint. The rule that matters is that the CALLER cannot name a host, and it
+has no field for one either way; an operator naming it added nothing to that and
+was one more thing to forget.
+
+Membership is also the allowlist, which is why it is one table and not two to
+drift apart. A cloud in `clouds` carries its credential as a bearer token; a
+cloud that signs its requests instead — AWS, anything on SigV4 — is absent and
+refused. Adding a cloud is one line, written by whoever worked out both halves.
+
+`EGRESS_URLS` / `-url` is an OVERRIDE and is ordinarily empty: it MOVES a cloud
+egress already carries (a regional or sovereign endpoint, a test's own server)
+and can never admit one it cannot pay for, because an address is not what makes
+a cloud payable.
+
+`serving()` in the tests refuses any non-loopback dial. Now that a cloud's real
+address is known, a fetch test that forgets to stand up a stand-in would
+otherwise reach the vendor for real and hand it a made-up token.
 
 **Two rules keep a path a path, and they are two functions.** `rooted` asks
 whether this is a path at all — one leading slash, no backslash. `resolve` asks
@@ -69,11 +86,8 @@ a 3xx comes back as itself. Following one would let the far end choose the next
 far end — the same decision the nil `Proxy` takes away from whoever writes the
 environment.
 
-**A cloud that signs rather than bearing a token is refused.** `carried` is an
-allowlist (`digitalocean`, `hetzner`), so a cloud arrives by someone working out
-how its credential travels. AWS and anything else on SigV4 cannot be served by
-attaching a header and are not sent one — which matches what `visor`'s own
-registry does with the same provider.
+`visor`'s own registry refuses the same providers for the same reason: a
+credential that cannot be carried correctly is not sent at all.
 
 **The client is its own module, and a measurement is why.** `hanzoai/egress/spend`
 carries `Fetch`, `Fetched` and `spend.Client`, with `fasthttp` and
