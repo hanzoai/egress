@@ -496,28 +496,29 @@ rests, and "no store" does not retire either of them.
 
 Stated rather than described around. **These hold under every option in §8** —
 they are properties of how the credential is *resolved*, not of where it rests, so
-none of them waits on the store decision. The first two are coupled and must land
-together: fixing absence-detection without fixing how a secret is located leaves
-the same wrong branch reachable by a different road.
+none of them waits on the store decision.
 
-**Store-absence is detected by error text.** "No such secret" is distinguished
-from "the store could not answer" by matching the word *not found* in the error
-string. The two are opposite signals and the consequence of confusing them is
-specific: a permission denial phrased as *not found* — a common practice, chosen
-precisely to avoid disclosing existence — would make a customer's own key look
-absent and silently spend the **platform's** key instead. The customer's bill and
-ours would both be wrong, and the meter would say `scope: org` with nobody
-noticing. The fix is a typed sentinel on the `Secrets` interface that the store
-adapter maps onto, so the seam carries the distinction structurally instead of
-in prose.
+**Absence and fault are now told apart by identity — closed.** They are opposite
+signals: absence sends the caller on to the shared key, a fault must end the
+call. They used to be told apart by searching the error text for *not found*,
+which the store writes by echoing the response body — so a permission denial
+phrased that way, a proxy's error page, or a tenant that no longer exists all
+arrived as absence. The cost was specific: a customer's own key looks absent, the
+**platform's** key is spent, and the meter says `scope: org` with nobody noticing.
 
-**Locating a secret is a second way to reach the same wrong branch, and it is
-coupled to the first.** A coordinate that is under-qualified does not fail loudly
-— it resolves somewhere else, and the caller is told the secret is absent. Joined
-to the text-matched absence check above, an addressing mistake and a permission
-denial arrive as the same answer, and the fallback spends the wrong credential
-either way. Fix both or neither: the coordinate must be fully qualified at every
-call site from one shared constant, and absence must come from a typed signal.
+Two things had to hold together, and both do. `absent` asks
+`errors.Is(err, kms.ErrSecretNotFound)` — the store wraps that sentinel on the
+paths where a secret is genuinely gone (kms `sdk/go` v1.1.5), and a tenant miss
+deliberately keeps its own untyped error, because it is a fault. And the
+coordinate cannot be under-qualified into resolving somewhere else: it is built
+by `userRef` and `orgRef` and nowhere else, both carry the tenant, and every call
+site goes through them.
+
+The guard that existed used a fault whose text happened to avoid the phrase, so
+it never exercised this. `TestAFaultWordedLikeAnAbsenceDoesNotSpendTheSharedKey`
+breaks a customer's read while their key and the shared one are both present and
+resolvable, and fails on the old behaviour with *a store fault served a call:
+resolved org custody*.
 
 **Abandoned calls retain the credential.** The dialects take no context, so a
 call past its deadline is left running rather than stopped — correctly, and its
