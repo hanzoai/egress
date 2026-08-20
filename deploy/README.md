@@ -8,22 +8,67 @@ blast radius has not moved the credential anywhere useful.
 
 ## The host
 
-A droplet with a LUKS root whose passphrase is entered by a person at boot and
-never stored in any cloud. A snapshot, a detached volume and DO's own password
-reset then all yield ciphertext — the last because it must write `/etc/shadow`,
-which is inside the encrypted volume.
+**Our own metal, and that is not a preference.** The point of this host is to sit
+outside the blast radius of a DO API token; renting it from DO puts it back
+inside. There is also nothing to ask DO for — it sells no confidential compute —
+so the choice is not between providers, it is between borrowed hardware and ours.
 
-Unlocking is manual by design. Automating it would put the passphrase somewhere
-a cloud API can read, which is the thing being avoided. A reboot needs a human.
+**The passphrase does not exist.** The LUKS root is sealed to the machine's TPM
+under a PCR policy, so the disk unlocks only on this board, only under the boot
+chain we signed. Nobody types anything, nobody knows a passphrase, and a reboot
+is unattended — which matters because a host that needs a human to come back is a
+host somebody keeps a passphrase for.
+
+```
+# root, sealed to firmware + secure boot + the signed kernel image
+systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7+11 /dev/<root>
+```
+
+**A provider key is encrypted to this box before it is stored anywhere.** The
+TPM holds a key that cannot be exported — not by us, not by root, not with the
+disk in another machine. Every credential is sealed to it and only then written
+to KMS, so what KMS holds is ciphertext that KMS itself cannot open. That answers
+the question the store model could not: a KMS administrator reading every row
+learns nothing.
+
+```
+# on the host, once per credential — the plaintext never lands on disk
+systemd-creds encrypt --with-key=tpm2 --tpm2-pcrs=7+11 - /etc/egress/creds/<name>
+# the unit receives it decrypted into its own credential directory, memory only
+LoadCredentialEncrypted=<name>:/etc/egress/creds/<name>
+```
+
+**The policy binds the code, not the operator.** PCR 11 measures the unified
+kernel image, so a changed binary, an added debug route or an attached debugger
+produces a different measurement and the TPM simply declines to unseal. Nothing
+here rests on trusting whoever holds the machine — it rests on the build being
+the one that was reviewed.
+
+Consequently the box is an appliance: no SSH, no shell, no console login, and
+nothing is repaired in place. CI signs an image, the host verifies the signature
+and takes it whole, and a host that misbehaves is destroyed and replaced. It
+holds no state worth keeping, which is what makes that cheap.
 
 ```
 adduser --system --group --no-create-home egress
 install -m0755 egress /usr/local/bin/egress
 install -d -m0700 /etc/egress
-install -m0400 env /etc/egress/env          # from env.example, filled in
 install -m0644 egress.service /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now egress
 ```
+
+### What this does not do
+
+**A running host has the key in memory.** The TPM seals storage; it does not
+encrypt RAM. Root on a live box, a DMA-capable port, or a cold-boot attack still
+reaches the plaintext. Only encrypted memory closes that — SEV-SNP on AMD EPYC or
+TDX on Xeon, neither of which is a consumer part and neither of which any cloud
+we use offers. It is one machine to buy, not an architecture to change: the
+sealing and attestation above are unchanged by it.
+
+**Egress can always spend.** Custody stops a key being taken; it does not stop
+the door being used. That is what the meter, the per-principal quota and the
+vendor-side cap are for, and they remain load-bearing rather than decorative.
 
 ## Enrolling the identity
 
