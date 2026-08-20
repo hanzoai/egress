@@ -32,11 +32,21 @@ the question the store model could not: a KMS administrator reading every row
 learns nothing.
 
 ```
-# on the host, once per credential — the plaintext never lands on disk
-systemd-creds encrypt --with-key=tpm2 --tpm2-pcrs=7+11 - /etc/egress/creds/<name>
+# the identity, sealed once on the host — the plaintext never lands on disk
+systemd-creds encrypt --with-key=tpm2 --name=mnemonic - /etc/egress/mnemonic.cred
 # the unit receives it decrypted into its own credential directory, memory only
-LoadCredentialEncrypted=<name>:/etc/egress/creds/<name>
+LoadCredentialEncrypted=mnemonic:/etc/egress/mnemonic.cred
 ```
+
+**The identity is sealed even where the root is not.** `systemd-creds` binds to
+the TPM independently of LUKS, so a host that has not yet been rebuilt with an
+encrypted root still keeps its innermost secret as ciphertext at rest. That
+matters because the mnemonic derives the key that unlocks every provider
+credential: it used to sit in `/etc/egress/env` as plaintext AND in this
+process's environment, where `/proc/<pid>/environ` hands it to anything running
+as root. Invariant 3 forbids exactly that, and the identity was the one
+credential exempting itself from the rule it exists to enforce. There is no
+environment fallback — one way to hold it, or the service does not start.
 
 **The policy binds the code, not the operator.** PCR 11 measures the unified
 kernel image, so a changed binary, an added debug route or an attached debugger

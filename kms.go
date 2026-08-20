@@ -2,7 +2,10 @@ package egress
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/hanzoai/kms/sdk/go/kmsclient"
@@ -22,7 +25,11 @@ type vault struct {
 // identity there is no way to prove who is reading, and a store that cannot
 // tell is not one to read from.
 func Vault(cfg Config) (Secrets, func(), error) {
-	identity, err := kmsclient.IdentityFromEnv(cfg.KMSPath)
+	mnemonic, err := sealedMnemonic()
+	if err != nil {
+		return nil, nil, fmt.Errorf("egress: %w", err)
+	}
+	identity, err := kmsclient.NewIdentity(mnemonic, cfg.KMSPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("egress: %w", err)
 	}
@@ -39,6 +46,40 @@ func Vault(cfg Config) (Secrets, func(), error) {
 		_ = to.Close()
 		identity.Wipe()
 	}, nil
+}
+
+// mnemonic is the innermost secret on this host — it derives the identity that
+// unlocks every provider credential — and it is read from a SEALED CREDENTIAL,
+// never from the environment.
+//
+// The store SDK will take it from LUX_MNEMONIC, and that was how this ran. It
+// put the one secret everything else hangs off into a plaintext file and into
+// this process's environment, where /proc/<pid>/environ hands it to anything
+// running as root. Invariant 3 says no file and no environment variable; the
+// identity was the one credential exempting itself from the rule it exists to
+// enforce.
+//
+// systemd decrypts a LoadCredentialEncrypted unit credential with the TPM and
+// places it in a per-service directory that is memory-backed and readable only
+// by this unit. So the value is ciphertext on disk, plaintext only in this
+// process, and absent from the environment entirely. That property does not
+// depend on an encrypted root, which is why it holds on a host that has none.
+//
+// No environment fallback. One way to hold it, or the service does not start.
+func sealedMnemonic() (string, error) {
+	dir := os.Getenv("CREDENTIALS_DIRECTORY")
+	if dir == "" {
+		return "", errors.New("no CREDENTIALS_DIRECTORY: run under systemd with LoadCredentialEncrypted=mnemonic:/etc/egress/mnemonic.cred")
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "mnemonic"))
+	if err != nil {
+		return "", fmt.Errorf("read the sealed mnemonic: %w", err)
+	}
+	m := strings.TrimSpace(string(raw))
+	if m == "" {
+		return "", errors.New("the sealed mnemonic is empty")
+	}
+	return m, nil
 }
 
 // GetSecret reads one credential by reference.
