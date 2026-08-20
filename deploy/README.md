@@ -183,13 +183,24 @@ What holds the DigitalOcean key today:
 | `KMSSecret hanzo/visor-kms-sync` | syncs it into the Secret every 600s |
 | Secret `hanzo/visor-config` | plaintext to anyone with cluster read |
 | Deployment `hanzo/visor` | reads it as env |
-| Deployment `hanzo/bot-gateway` | **reads it as env too** |
 
-**`bot-gateway` is the one that blocks a clean delete.** It has no carrier: it
-takes the token from its environment and calls DigitalOcean itself. Repointing
-visor and deleting the Secret breaks it. Either it grows a carrier of its own —
-it is the same `spend.Client` swap, since `spend.Client` returns an
-`*http.Client` — or the delete waits for it.
+**A second DigitalOcean credential exists, and it is not this one.**
+`shared-credentials/DO_API_TOKEN` is a DIFFERENT value (different hash) read by
+`bot-gateway`. So the two cut independently — deleting visor's key does not
+break bot-gateway — but the capability has two names, two stores and two
+lifetimes, which is why a rotation misses one and a meter never sees the other.
+Both belong at the same custody path; the second is not a blocker, it is a
+second migration.
+
+**Measured, and it is the same shape on the model plane.** Nine Secrets across
+three namespaces hold vendor LLM keys directly — `enso/enso-secrets`,
+`hanzo/bot-secrets`, `hanzo/chat-secrets`, `hanzo/cloud-api-llm-keys`,
+`hanzo/cloud-search-config`, `hanzo/gateway-secrets`, `hanzo/hanzo-app-secrets`,
+`hanzo/llm-secrets`, `zen/zen-secrets` — carrying OpenAI, Anthropic, Fireworks
+and OpenRouter between them. `bot-gateway` holds `HANZO_API_KEY` AND
+`FIREWORKS_API_KEY`, so it reaches a vendor by two roads and only one of them is
+metered. Every one of those is a call egress never sees, which is the same
+sentence as "a call nobody billed".
 
 Order, and it is the same shape as the model plane:
 
