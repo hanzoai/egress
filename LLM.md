@@ -29,6 +29,65 @@ metered call and never hold a key. `ingress` is the inbound twin.
 
 Egress owns exactly one thing: the decision to spend, and the record of it.
 
+## Two shapes, one custody
+
+Egress sells two things, and the difference between them is the shape of the
+answer, not the shape of the trust.
+
+| | `POST /v1/call` | `POST /v1/fetch` |
+|---|---|---|
+| spends on | a model | a cloud API |
+| answer | a token stream, then a meter | one status and one body |
+| typed op | no — a stream has no single output | yes, so it projects into OpenAPI, MCP, the op plane |
+| contract lives in | this package (`call.go`) | `hanzoai/egress/spend` |
+
+They share the door, the ceiling, the custody path, the circuit breaker and
+`scrub`. That is the point: **custody is orthogonal to shape**, so a second
+thing to spend on cost a request struct and a handler, not a second service.
+
+**What a caller may say is the whole design of `Fetch`.** No org and no user —
+those come from the token. No host — that comes from `EGRESS_URLS` on this
+host. No headers — a caller that can write a header can write the one carrying
+the credential. Egress writes every header itself.
+
+**A cloud has no built-in endpoint, and must not grow one.** A model dialect
+falls back to its vendor's URL when `URLs` is silent; a cloud is refused. A
+fallback would mean a provider NAME alone decides where a credential is sent,
+which is the thing the missing `host` field exists to prevent.
+
+**Two rules keep a path a path, and they are two functions.** `rooted` asks
+whether this is a path at all — one leading slash, no backslash. `resolve` asks
+whether the resolved request stayed on the configured host. Nothing reaches the
+second while the first stands: a reference beginning with a single slash cannot
+carry an authority, because an authority appears only after two. It is there for
+the day someone loosens `rooted` for convenience, and it is its own function so
+`TestReference` can call it directly and prove it works — phrased as a third
+check inside `reference` it was unreachable, and deleting it broke no test.
+
+**Redirects are not followed.** `CheckRedirect` returns `ErrUseLastResponse`, so
+a 3xx comes back as itself. Following one would let the far end choose the next
+far end — the same decision the nil `Proxy` takes away from whoever writes the
+environment.
+
+**A cloud that signs rather than bearing a token is refused.** `carried` is an
+allowlist (`digitalocean`, `hetzner`), so a cloud arrives by someone working out
+how its credential travels. AWS and anything else on SigV4 cannot be served by
+attaching a header and are not sent one — which matches what `visor`'s own
+registry does with the same provider.
+
+**The client is its own module, and a measurement is why.** `hanzoai/egress/spend`
+carries `Fetch`, `Fetched` and `spend.Client`, with `fasthttp` and
+`zap-proto/http` as its entire dependency set. Requiring the PARENT for those two
+structs moved `visor` from authz 1.10.14 to 1.10.30, which relocated packages
+visor imports and broke its build — besides bringing the KMS client and the
+dialects into a process whose whole point is that it holds no key. The parent
+requires the leaf and `replace`s it with `./spend`, which is how one repo builds
+two modules against its own tree. Tag the leaf as `spend/vX.Y.Z`.
+
+`spend.Client` returns an `*http.Client`, so adopting egress is a transport swap
+and not an SDK rewrite — `godo.NewClient(c)`, `hcloud.WithHTTPClient(c)`. The
+SDK's base URL is discarded; only method, path and body travel.
+
 ## What the laws meant once the code met them
 
 **The provider surface imports cleanly.** `github.com/hanzoai/ai/model` is it:
