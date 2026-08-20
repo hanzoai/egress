@@ -27,6 +27,9 @@ EnvironmentFile=/etc/egress/env
 # without one. Seal it with:
 #   systemd-creds encrypt --with-key=tpm2 --name=mnemonic - /etc/egress/mnemonic.cred
 LoadCredentialEncrypted=mnemonic:/etc/egress/mnemonic.cred
+# The http transport's secret, sealed the same way. Only the one the endpoint
+# selects is read, and a missing one is a refusal rather than a fallback.
+LoadCredentialEncrypted=client-secret:/etc/egress/client-secret.cred
 
 User=egress
 Group=egress

@@ -19,7 +19,7 @@ func TestTheIdentityIsNeverTakenFromTheEnvironment(t *testing.T) {
 	t.Setenv("MNEMONIC", "nor these")
 	t.Setenv("CREDENTIALS_DIRECTORY", "")
 
-	got, err := sealedMnemonic()
+	got, err := sealed("mnemonic")
 	if err == nil {
 		t.Fatalf("read %q with no sealed credential present — the environment was trusted", got)
 	}
@@ -39,7 +39,7 @@ func TestTheIdentityComesFromTheSealedCredential(t *testing.T) {
 	t.Setenv("CREDENTIALS_DIRECTORY", dir)
 	t.Setenv("LUX_MNEMONIC", "a different value that must lose")
 
-	got, err := sealedMnemonic()
+	got, err := sealed("mnemonic")
 	if err != nil {
 		t.Fatalf("sealed credential present and unreadable: %v", err)
 	}
@@ -57,7 +57,28 @@ func TestAnEmptySealedCredentialIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("CREDENTIALS_DIRECTORY", dir)
-	if _, err := sealedMnemonic(); err == nil {
+	if _, err := sealed("mnemonic"); err == nil {
 		t.Error("an empty mnemonic was accepted")
+	}
+}
+
+// THE ENDPOINT PICKS THE GATE, and getting this wrong is what a deploy pays for.
+// zap:// is a direct dial the public edge does not carry, so from off the cluster
+// — which is where this service lives — https is the reachable transport and it
+// authenticates by machine identity instead of by envelope signature.
+func TestTheEndpointDecidesTheTransport(t *testing.T) {
+	for _, c := range []struct {
+		endpoint string
+		zap      bool
+	}{
+		{"zap://kms.hanzo.ai:9999", true},
+		{"ZAP://kms.hanzo.ai:9999", true},
+		{"zap+mdns://_kms._tcp", true},
+		{"https://kms.hanzo.ai", false},
+		{"http://kms.hanzo.svc.cluster.local:8443", false},
+	} {
+		if got := overZAP(c.endpoint); got != c.zap {
+			t.Errorf("overZAP(%q) = %v, want %v", c.endpoint, got, c.zap)
+		}
 	}
 }

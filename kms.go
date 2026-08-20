@@ -25,19 +25,42 @@ type vault struct {
 // identity there is no way to prove who is reading, and a store that cannot
 // tell is not one to read from.
 func Vault(cfg Config) (Secrets, func(), error) {
-	mnemonic, err := sealedMnemonic()
-	if err != nil {
-		return nil, nil, fmt.Errorf("egress: %w", err)
+	// TWO TRANSPORTS, TWO GATES, AND THE ENDPOINT DECIDES WHICH.
+	//
+	// zap:// signs every call with a mnemonic-derived identity and the store
+	// verifies the envelope. http(s):// exchanges a machine identity for a
+	// bearer at IAM. They are not interchangeable and neither is a fallback for
+	// the other: a missing credential fails here rather than quietly trying the
+	// other door with the wrong one.
+	//
+	// This process runs off the cluster, where the ZAP port is not carried by
+	// the public edge — so https is the reachable one from here, and zap:// is
+	// for a caller inside.
+	store := kmsclient.Config{Endpoint: cfg.KMS, Org: cfg.KMSOrg}
+
+	var identity *kmsclient.Identity
+	if overZAP(cfg.KMS) {
+		m, err := sealed("mnemonic")
+		if err != nil {
+			return nil, nil, fmt.Errorf("egress: %w", err)
+		}
+		identity, err = kmsclient.NewIdentity(m, cfg.KMSPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("egress: %w", err)
+		}
+		store.Identity = identity
+	} else {
+		if cfg.IAM == "" || cfg.ClientID == "" {
+			return nil, nil, errors.New("egress: an http store endpoint needs -iam and -client-id")
+		}
+		secret, err := sealed("client-secret")
+		if err != nil {
+			return nil, nil, fmt.Errorf("egress: %w", err)
+		}
+		store.IAMEndpoint, store.ClientID, store.ClientSecret = cfg.IAM, cfg.ClientID, secret
 	}
-	identity, err := kmsclient.NewIdentity(mnemonic, cfg.KMSPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("egress: %w", err)
-	}
-	to, err := kmsclient.New(kmsclient.Config{
-		Endpoint: cfg.KMS,
-		Identity: identity,
-		Org:      cfg.KMSOrg,
-	})
+
+	to, err := kmsclient.New(store)
 	if err != nil {
 		identity.Wipe()
 		return nil, nil, fmt.Errorf("egress: open store: %w", err)
@@ -48,7 +71,13 @@ func Vault(cfg Config) (Secrets, func(), error) {
 	}, nil
 }
 
-// mnemonic is the innermost secret on this host — it derives the identity that
+// overZAP reports whether the endpoint names the signing transport.
+func overZAP(endpoint string) bool {
+	e := strings.ToLower(endpoint)
+	return strings.HasPrefix(e, "zap://") || strings.HasPrefix(e, "zap+mdns://")
+}
+
+// sealed reads one secret on this host — it derives the identity that
 // unlocks every provider credential — and it is read from a SEALED CREDENTIAL,
 // never from the environment.
 //
@@ -66,20 +95,20 @@ func Vault(cfg Config) (Secrets, func(), error) {
 // depend on an encrypted root, which is why it holds on a host that has none.
 //
 // No environment fallback. One way to hold it, or the service does not start.
-func sealedMnemonic() (string, error) {
+func sealed(name string) (string, error) {
 	dir := os.Getenv("CREDENTIALS_DIRECTORY")
 	if dir == "" {
-		return "", errors.New("no CREDENTIALS_DIRECTORY: run under systemd with LoadCredentialEncrypted=mnemonic:/etc/egress/mnemonic.cred")
+		return "", fmt.Errorf("no CREDENTIALS_DIRECTORY: run under systemd with LoadCredentialEncrypted=%s:/etc/egress/%s.cred", name, name)
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, "mnemonic"))
+	raw, err := os.ReadFile(filepath.Join(dir, name))
 	if err != nil {
-		return "", fmt.Errorf("read the sealed mnemonic: %w", err)
+		return "", fmt.Errorf("read the sealed %s: %w", name, err)
 	}
-	m := strings.TrimSpace(string(raw))
-	if m == "" {
-		return "", errors.New("the sealed mnemonic is empty")
+	v := strings.TrimSpace(string(raw))
+	if v == "" {
+		return "", fmt.Errorf("the sealed %s is empty", name)
 	}
-	return m, nil
+	return v, nil
 }
 
 // GetSecret reads one credential by reference.

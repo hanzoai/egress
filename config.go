@@ -49,6 +49,18 @@ type Config struct {
 	// derived at and the name KMS authorizes.
 	KMSPath string
 
+	// IAM is the identity server the HTTP transport exchanges client
+	// credentials at. Required when KMS is an http(s) endpoint, unused when it
+	// is zap:// — the two transports authenticate differently and the store SDK
+	// takes the same struct for both.
+	IAM string
+
+	// ClientID names this service's machine identity on the HTTP transport. It
+	// is an identifier, not a secret; the matching secret is sealed to the TPM
+	// and never appears here, in the environment, or in a file this process can
+	// be asked to print.
+	ClientID string
+
 	// RPM is how many calls one principal may make per minute.
 	RPM int
 
@@ -75,6 +87,8 @@ func (c *Config) Flags(fs *flag.FlagSet) {
 	fs.StringVar(&c.KMS, "kms", env("EGRESS_KMS", ""), "KMS endpoint, zap://host:port")
 	fs.StringVar(&c.KMSOrg, "kms-org", env("EGRESS_KMS_ORG", "hanzo"), "KMS tenant holding the custody tree")
 	fs.StringVar(&c.KMSPath, "kms-path", env("EGRESS_KMS_PATH", "hanzo/egress"), "this service's identity path")
+	fs.StringVar(&c.IAM, "iam", env("EGRESS_IAM", ""), "IAM endpoint for the http transport")
+	fs.StringVar(&c.ClientID, "client-id", env("EGRESS_CLIENT_ID", ""), "machine identity for the http transport")
 	fs.IntVar(&c.RPM, "rpm", envInt("EGRESS_RPM", 600), "calls per minute per principal")
 	fs.DurationVar(&c.Deadline, "deadline", envDuration("EGRESS_DEADLINE", 5*time.Minute), "upstream call deadline")
 	fs.Var(urls{&c.URLs}, "url", "upstream base URL for one provider, provider=url (repeatable)")
