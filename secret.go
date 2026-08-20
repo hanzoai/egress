@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	kms "github.com/hanzoai/kms/sdk/go"
+	"github.com/luxfi/kms/pkg/zapclient"
 )
 
 // Secrets is where credentials are kept. It is the same read/write pair
@@ -162,10 +165,15 @@ func (c *custody) read(ctx context.Context, ref string) (string, error) {
 
 // absent reports whether an error means "no such secret" rather than "the store
 // could not answer". The two are opposite signals: the first is the ordinary
-// state of a tenant with no key of its own, the second is a fault that must end
-// the call. Matched on the error's text because the sentinel lives inside the
-// key-management library and egress does not depend on it — the seam above is
-// declared structurally so this package needs no KMS import at all.
+// state of a tenant with no key of its own and sends the caller on to the shared
+// key, the second is a fault that must end the call.
+//
+// Asked by identity, never by wording. The store reports a fault by echoing the
+// response body into the error, so a 500 whose body happens to contain "not
+// found" — an authorization failure, a proxy's error page, a tenant that no
+// longer exists — used to read as absence. That is the one misreading whose cost
+// is a customer's own key being passed over in favour of the platform's while
+// theirs was merely unreadable, and the meter then recording it as intended.
 func absent(err error) bool {
-	return err != nil && strings.Contains(strings.ToLower(err.Error()), "not found")
+	return errors.Is(err, kms.ErrSecretNotFound) || errors.Is(err, zapclient.ErrNotFound)
 }
