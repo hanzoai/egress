@@ -75,12 +75,17 @@ type Config struct {
 	// Deadline bounds one upstream call.
 	Deadline time.Duration
 
-	// URLs maps a provider to the upstream base URL to dial for it. An entry
-	// exists only because an operator wrote it on this host. A provider absent
-	// here gets the dialect's own built-in endpoint.
+	// URLs OVERRIDES where a provider answers. It is empty in the ordinary case:
+	// a model dialect carries its vendor's endpoint and a cloud's address is
+	// stated once in `clouds`, because where DigitalOcean answers is a fact about
+	// DigitalOcean rather than a choice this host makes. An entry moves one —
+	// a regional or sovereign endpoint — and can never admit a provider that is
+	// otherwise unserved.
 	//
-	// This is deliberately NOT a request field. A caller that could name the
-	// upstream could name its own, and egress would hand it the credential.
+	// This is deliberately NOT a request field, and that is the rule that
+	// matters. A caller that could name the upstream could name its own, and
+	// egress would hand it the credential. An operator naming it adds nothing to
+	// that, which is why it is not required.
 	URLs map[string]string
 
 	// unreadable holds EGRESS_URLS entries that are not provider=url. A typo
@@ -106,11 +111,9 @@ func (c *Config) Flags(fs *flag.FlagSet) {
 	fs.StringVar(&c.ClientID, "client-id", env("EGRESS_CLIENT_ID", ""), "machine identity for the http transport")
 	fs.IntVar(&c.RPM, "rpm", envInt("EGRESS_RPM", 600), "calls per minute per principal")
 	fs.DurationVar(&c.Deadline, "deadline", envDuration("EGRESS_DEADLINE", 5*time.Minute), "upstream call deadline")
-	// The environment first, then the flags, so a systemd unit can configure
-	// upstreams without a command line — which is how this host is configured,
-	// and the only way a cloud provider gets an upstream at all. A model dialect
-	// has a built-in endpoint to fall back to; a cloud call has none and is
-	// refused, so a value absent here is a provider egress will not serve.
+	// The environment first, then the flags, so a systemd unit can override an
+	// upstream without a command line — which is how this host is configured.
+	// Both are ordinarily empty.
 	for _, pair := range strings.Split(env("EGRESS_URLS", ""), ",") {
 		if strings.TrimSpace(pair) == "" {
 			continue

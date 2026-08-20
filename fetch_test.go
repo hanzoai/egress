@@ -191,20 +191,45 @@ func TestAFetchRefusesACloudItCannotCarry(t *testing.T) {
 	}
 }
 
-// An upstream nobody configured is refused. There is no built-in endpoint to
-// fall back to and there must not be one: falling back would mean a provider
-// name alone decides where a credential is sent.
-func TestAFetchRefusesAnUnconfiguredUpstream(t *testing.T) {
-	s, key := serving(t, newStore(map[string]string{
-		orgRef(alice, "digitalocean", "default"): "dop_v1_secret",
-	}), 100)
-
-	code, body := fetched(t, s, key, spend.Fetch{Provider: "DigitalOcean", Method: "GET", Path: "/v2/droplets"})
-	if code == http.StatusOK {
-		t.Fatalf("served with no upstream configured: %s", body)
+// A cloud's address is a fact about that cloud, so egress knows it and an
+// operator does not type it. Asserted on what upstream() resolves rather than by
+// making a call, because the real address is a real host and a test must not
+// reach one.
+func TestACloudsAddressIsKnownWithoutConfiguration(t *testing.T) {
+	s, _ := serving(t, newStore(nil), 100)
+	if s.cfg.URLs != nil {
+		t.Fatalf("this test is only meaningful with nothing configured: %v", s.cfg.URLs)
 	}
-	if !strings.Contains(body, "no upstream") {
-		t.Errorf("refusal does not say why: %s", body)
+	for provider, want := range map[string]string{
+		"digitalocean": "https://api.digitalocean.com",
+		"hetzner":      "https://api.hetzner.cloud",
+	} {
+		got, ok := s.upstream(provider)
+		if !ok || got != want {
+			t.Errorf("upstream(%q) = %q, %v; want %q", provider, got, ok, want)
+		}
+	}
+	// And membership is the allowlist: a cloud egress cannot pay for has no
+	// address here either, so there is one table and not two to disagree.
+	if got, ok := s.upstream("aws"); ok {
+		t.Errorf("upstream(\"aws\") = %q — AWS signs its requests and cannot be paid with a header", got)
+	}
+}
+
+// An override moves a cloud egress already carries — a regional endpoint, a
+// sovereign one, a test's own server. It cannot admit a cloud that is absent,
+// because the address is not what makes a cloud payable.
+func TestAnOverrideMovesACloudButCannotAdmitOne(t *testing.T) {
+	s, _ := serving(t, newStore(nil), 100)
+	s.cfg.URLs = map[string]string{
+		"digitalocean": "https://api.digitalocean.example",
+		"aws":          "https://ec2.amazonaws.com",
+	}
+	if got, _ := s.upstream("digitalocean"); got != "https://api.digitalocean.example" {
+		t.Errorf("the override was ignored: %q", got)
+	}
+	if got, ok := s.upstream("aws"); ok {
+		t.Errorf("an override admitted a cloud egress cannot pay for: %q", got)
 	}
 }
 

@@ -16,24 +16,43 @@ import (
 	"time"
 )
 
-// carried lists the clouds egress knows how to pay for, and how.
+// clouds are the clouds egress can spend on, and where each one's API answers.
 //
-// Every entry here carries its credential as a bearer token, which is why the
-// value is nothing more than membership. A cloud that signs its requests instead
-// — AWS, and anything else using SigV4 — cannot be served by attaching a header,
-// and is refused rather than sent upstream with a header it will reject. The
-// refusal is the honest answer: egress cannot spend that credential yet.
+// Where DigitalOcean's API lives is a fact about DigitalOcean, not a choice this
+// deployment makes, so it is stated here once rather than typed into every host's
+// configuration. That an operator does not name it costs nothing: the rule that
+// matters is that the CALLER cannot, and the caller has no field for it either
+// way. It is the same shape as a model dialect, which carries its vendor's
+// endpoint and is asked for a fallback only when a deployment overrides one.
 //
-// This is an allowlist, so a cloud arrives here by someone adding it, having
-// worked out how its credential is carried. A denylist would serve every cloud
-// nobody had thought about.
-var carried = map[string]bool{
-	"digitalocean": true,
-	"hetzner":      true,
+// Membership is also the allowlist. A cloud here carries its credential as a
+// bearer token; a cloud that signs its requests instead — AWS, and anything else
+// on SigV4 — cannot be served by attaching a header, so it is absent and refused
+// rather than sent upstream with a header it will reject. Adding a cloud is
+// therefore one line written by someone who worked out both halves, and there is
+// no second table to agree with.
+var clouds = map[string]string{
+	"digitalocean": "https://api.digitalocean.com",
+	"hetzner":      "https://api.hetzner.cloud",
 }
 
 // ErrNotCarried is what a cloud egress cannot pay for gets.
 var ErrNotCarried = errors.New("egress: credential cannot be carried for this provider")
+
+// upstream is where a cloud's API answers: what egress knows, unless this host
+// overrode it. An override serves a regional or sovereign endpoint, and a test
+// pointing at a server of its own; it can only move a cloud egress already
+// carries, never admit one it cannot pay for.
+func (s *Server) upstream(provider string) (string, bool) {
+	api, ok := clouds[provider]
+	if !ok {
+		return "", false
+	}
+	if override := s.cfg.URLs[provider]; override != "" {
+		return override, true
+	}
+	return api, true
+}
 
 // verbs are the methods a cloud call may use. CONNECT and TRACE are absent
 // because no cloud API uses them and both are useful only for reaching something
@@ -60,9 +79,7 @@ func (s *Server) fetch(ctx context.Context, in *spend.Fetch) (*spend.Fetched, er
 	if !ok {
 		return nil, zip.ErrBadRequest("unknown provider")
 	}
-	if !carried[provider] {
-		return nil, zip.ErrBadRequest(ErrNotCarried.Error())
-	}
+
 	label := in.Label
 	if label == "" {
 		label = "default"
@@ -74,7 +91,11 @@ func (s *Server) fetch(ctx context.Context, in *spend.Fetch) (*spend.Fetched, er
 	if !verbs[method] {
 		return nil, zip.ErrBadRequest("method is not one a cloud API uses")
 	}
-	target, err := reference(s.cfg.URLs[provider], in.Path)
+	api, ok := s.upstream(provider)
+	if !ok {
+		return nil, zip.ErrBadRequest(ErrNotCarried.Error())
+	}
+	target, err := reference(api, in.Path)
 	if err != nil {
 		return nil, zip.ErrBadRequest(err.Error())
 	}
@@ -185,7 +206,7 @@ func rooted(path string) error {
 		return errors.New("path must begin with a single /")
 	}
 	// A backslash is not a separator to Go and is one to several other parsers,
-	// so "/\evil.example/x" resolves here to a path on the configured host and
+	// so "/\evil.example/x" resolves here to a path on the upstream host and
 	// reads elsewhere as a host of its own. It stays on the configured host
 	// either way — resolve sees to that — but a request whose meaning depends on
 	// who is reading it is not one to forward, and no cloud API has a backslash
@@ -197,8 +218,8 @@ func rooted(path string) error {
 	return nil
 }
 
-// resolve joins path onto the upstream this host configured and refuses anything
-// that does not stay there.
+// resolve joins path onto the cloud's upstream and refuses anything that does
+// not stay there.
 //
 // Nothing reaches the comparison while rooted runs ahead of it: a reference
 // beginning with a single slash cannot carry an authority, because an authority
@@ -208,12 +229,9 @@ func rooted(path string) error {
 // path for convenience does not also, without noticing, allow a host — and being
 // its own function is what lets a test reach it to prove it.
 func resolve(base, path string) (string, error) {
-	if base == "" {
-		return "", errors.New("no upstream is configured for this provider")
-	}
 	root, err := url.Parse(base)
 	if err != nil || root.Scheme != "https" || root.Host == "" {
-		return "", errors.New("the configured upstream is not a URL")
+		return "", errors.New("the upstream is not an https URL")
 	}
 	ref, err := url.Parse(path)
 	if err != nil {
@@ -221,7 +239,7 @@ func resolve(base, path string) (string, error) {
 	}
 	target := root.ResolveReference(ref)
 	if target.Scheme != root.Scheme || target.Host != root.Host {
-		return "", errors.New("path must not leave the configured upstream")
+		return "", errors.New("path must not leave the upstream")
 	}
 	return target.String(), nil
 }

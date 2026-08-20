@@ -2,9 +2,12 @@ package egress
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -37,6 +40,22 @@ func serving(t *testing.T, s *store, rpm int) (*Server, jwt.Key) {
 	}, s, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	// A test must never reach a real host. Now that egress knows where each
+	// cloud answers, a fetch test that forgets to stand one up would dial the
+	// vendor for real and hand it a made-up token. Every stand-in is loopback,
+	// so refusing anything else turns that mistake into a clear failure.
+	transport := server.fetcher.Transport.(*http.Transport)
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+			return nil, fmt.Errorf("a test tried to reach %s: stand up a stand-in with upstream(t, s, …)", addr)
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
 	}
 	return server, key
 }
