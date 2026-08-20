@@ -83,6 +83,7 @@ func TestEveryRouteRefusesAnUnidentifiedCaller(t *testing.T) {
 	s, _ := serving(t, newStore(nil), 100)
 	for _, route := range []struct{ method, path string }{
 		{http.MethodPost, "/v1/call"},
+		{http.MethodPost, "/v1/fetch"},
 		{http.MethodPost, "/v1/enroll"},
 		{http.MethodGet, "/v1/health"},
 	} {
