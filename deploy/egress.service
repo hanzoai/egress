@@ -30,6 +30,14 @@ LoadCredentialEncrypted=mnemonic:/etc/egress/mnemonic.cred
 # The http transport's secret, sealed the same way. Only the one the endpoint
 # selects is read, and a missing one is a refusal rather than a fallback.
 LoadCredentialEncrypted=client-secret:/etc/egress/client-secret.cred
+# THE KEY THAT OPENS EVERY PROVIDER CREDENTIAL. Its public half, EGRESS_RECIPIENT
+# in the environment file, seals them, and lives openly wherever it likes —
+# nobody who holds it can read anything. This half is why: it exists on this
+# machine, sealed to this machine's TPM, and every credential in KMS is
+# ciphertext to everyone who does not have it. Mint the pair once, keep this
+# half here and nowhere else:
+#   systemd-creds encrypt --with-key=tpm2 --name=identity - /etc/egress/identity.cred
+LoadCredentialEncrypted=identity:/etc/egress/identity.cred
 
 User=egress
 Group=egress

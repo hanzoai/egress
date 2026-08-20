@@ -7,7 +7,7 @@ require (
 	github.com/hanzoai/jwt v0.0.0-20260806093505-517c034b1826
 	github.com/hanzoai/kms/sdk/go v1.1.5
 	github.com/luxfi/keys v1.4.2
-	github.com/luxfi/kms v1.12.18
+	github.com/luxfi/kms v1.12.20
 	github.com/valyala/fasthttp v1.72.0
 	github.com/zap-proto/http v0.3.5
 	github.com/zap-proto/zip v1.31.0

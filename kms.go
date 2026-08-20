@@ -65,7 +65,24 @@ func Vault(cfg Config) (Secrets, func(), error) {
 		identity.Wipe()
 		return nil, nil, fmt.Errorf("egress: open store: %w", err)
 	}
-	return &vault{to: to}, func() {
+
+	// The store keeps what it is given; the seal decides what that is worth.
+	// Every credential crossing this line is already sealed to this host, so KMS
+	// holds ciphertext and the key that opens it never left the TPM. See
+	// envelope.go for why that is the arrangement rather than trusting the store.
+	me, err := sealed("identity")
+	if err != nil {
+		_ = to.Close()
+		identity.Wipe()
+		return nil, nil, fmt.Errorf("egress: %w", err)
+	}
+	held, err := Envelope(&vault{to: to}, cfg.Recipient, me)
+	if err != nil {
+		_ = to.Close()
+		identity.Wipe()
+		return nil, nil, err
+	}
+	return held, func() {
 		_ = to.Close()
 		identity.Wipe()
 	}, nil

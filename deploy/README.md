@@ -76,9 +76,38 @@ TDX on Xeon, neither of which is a consumer part and neither of which any cloud
 we use offers. It is one machine to buy, not an architecture to change: the
 sealing and attestation above are unchanged by it.
 
+**Sealing does not authenticate the store.** A substitute answering in KMS's
+place can no longer offer a credential of its choosing — it would have to seal
+one to this host's recipient, which it cannot do — but it can still replay a
+genuine sealed record it captured. Forgery is closed; replay is not.
+
 **Egress can always spend.** Custody stops a key being taken; it does not stop
 the door being used. That is what the meter, the per-principal quota and the
 vendor-side cap are for, and they remain load-bearing rather than decorative.
+
+## The sealing pair — mint before anything else
+
+Every provider credential in KMS is sealed to this host. Mint the pair on the
+host, and let the pipe put each half where it belongs:
+
+```
+egress mint | systemd-creds encrypt --with-key=tpm2 --name=identity - /etc/egress/identity.cred
+```
+
+The secret half goes down the pipe into the TPM and never exists as a file. The
+public half prints on stderr as `EGRESS_RECIPIENT=age1pq1…` — read it off the
+screen and put it in `/etc/egress/env`. It is public by construction: anything
+holding it can seal a credential and open none, which is exactly why the cluster
+is allowed to have it and why enrolling a key is not the same capability as
+reading one.
+
+Losing `identity.cred` loses every credential sealed to it. That is the design
+working, not a fault in it — so the recovery plan is re-enrolment at the vendors,
+and there is deliberately no copy anywhere to fall back on.
+
+Rotation is a second recipient, not an outage: re-seal each credential to the new
+one, then retire the old. A record names its own recipient in `key_handle`, so
+both can be in the store at once and each opens with the identity it belongs to.
 
 ## Enrolling the identity
 
