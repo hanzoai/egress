@@ -35,6 +35,26 @@ jobs:
       # Runners are in-cluster, so reach the forge by Service rather than back
       # out through the SSO proxy that fronts git.hanzo.ai.
       FORGE: http://hanzo-git.hanzo.svc/v1
+
+      # github.com/hanzoai/kms is a private repo, so go-mod cannot read its
+      # go.mod anonymously and says so as `could not read Username for
+      # 'https://github.com': terminal prompts disabled` -- which reads like a
+      # prompt problem and is a permission one. Every tag after v0.1.1 failed
+      # here and published no binary, because the pin moved from a version the
+      # public proxy had cached to one that exists only in the private repo.
+      #
+      # GOPRIVATE names that ONE module rather than github.com/hanzoai/*: every
+      # other dependency then keeps resolving through the proxy with
+      # sum.golang.org authoritative, and only the module that must be fetched
+      # direct is fetched direct.
+      GOPRIVATE: github.com/hanzoai/kms
+      # The token reaches git as process environment, so the build writes no
+      # credential to the runner's disk -- the runner is shared, and a
+      # ~/.gitconfig outlives the job that wrote it. Same mechanism as visor's
+      # build.sh, which is where this pattern already works.
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.GH_PAT }}@github.com/.insteadOf
+      GIT_CONFIG_VALUE_0: https://github.com/
     steps:
       - uses: actions/checkout@v4
         with:
