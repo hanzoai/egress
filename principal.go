@@ -14,20 +14,55 @@ import (
 )
 
 // Principal is the identity a call spends under: the tenant that owns the
-// credential and the person or machine inside it.
+// credential and the person or program inside it.
 //
 // It is only ever built from a token this process verified. Nothing a caller
-// writes in a request body reaches these two fields, because they become the
+// writes in a request body reaches these fields, because they become the
 // custody path — a caller that could name its own path could name another
 // tenant's.
 type Principal struct {
 	// Org is the tenant, the `owner` claim.
+	//
+	// It is read from that claim and from nowhere else. A program's subject
+	// reads `admin/hanzo-egress`, and the half before the slash is the org the
+	// APPLICATION ROW is filed under — the reserved `admin` org, for every
+	// application in the estate — while the tenant it acts for is `hanzo`.
+	// Splitting the subject to find a tenant therefore roots every program's
+	// credentials in the one org that means platform sudo.
 	Org string
-	// User is the immutable user id, the `id` claim — not the username. A
-	// username can be given up and taken by somebody else, and a custody path
-	// keyed on one would hand that somebody the previous holder's credentials.
-	User string
+	// Kind is which of the two custody namespaces this principal lives in:
+	// [Persons] or [Programs].
+	//
+	// This is the whole defence against one principal reaching another's
+	// credentials, so it is worth saying why it is a namespace and not an
+	// encoding. A person and a program are named by different things — an
+	// opaque id, a client id — drawn from registries that never agreed to stay
+	// out of each other's way. Any scheme that flattens both into one path
+	// segment has to make them not collide, and the value that collides is one
+	// an attacker CHOOSES: register the account or the app whose name, once
+	// flattened, lands on the path already holding somebody's key.
+	//
+	// So they are not flattened. Each class gets its own namespace, spelled by
+	// one of two constants in this package. No claim reaches this field, so no
+	// name a caller picks can move it into the other class's half.
+	Kind string
+	// Name is the principal within that namespace: an opaque subject for a
+	// person, a client id for a program. Both are unique to the issuer.
+	//
+	// For a person it is the subject, NOT the username. A username can be given
+	// up and taken by somebody else, and a custody path keyed on one would hand
+	// that somebody the previous holder's credentials.
+	Name string
 }
+
+// The two custody namespaces. They are constants rather than anything derived
+// because a namespace a token could name is not a boundary.
+const (
+	// Persons holds credentials belonging to people.
+	Persons = "users"
+	// Programs holds credentials belonging to applications.
+	Programs = "apps"
+)
 
 // ErrAnonymous is what an unidentifiable caller gets. It carries no detail
 // about why: the difference between "no token", "wrong audience" and "expired"
@@ -81,14 +116,44 @@ func (v *Verifier) Verify(ctx context.Context, authorization string) (Principal,
 		jwt.WithAudience(v.audience),
 		jwt.WithExpiryRequired(),
 	)
-	if err != nil || claims == nil || claims.User == nil {
+	if err != nil || claims == nil {
 		return Principal{}, ErrAnonymous
 	}
-	p := Principal{Org: claims.Owner, User: claims.Id}
+	return identify(claims)
+}
+
+// identify reads the verified claims into the identity a call spends under.
+//
+// The class comes from the issuer's own `type`, which it resolves from the grant
+// it answered. Reading it rather than inferring it is the point: the inference
+// within reach here is the subject's shape, and a program's subject and a
+// person's take the SAME `owner/name` form whenever a token names an account
+// instead of its id. That inference files those people as programs, under a
+// namespace where an application's name is what addresses a credential.
+func identify(c *jwt.Claims) (Principal, error) {
+	p := Principal{Kind: Persons}
+	if c.User != nil {
+		p.Org = c.Owner
+		// The subject, or the `id` spelling of it from an issuer that mints
+		// that instead. Both name the same thing; neither is the username.
+		p.Name = c.Subject
+		if p.Name == "" {
+			p.Name = c.Id
+		}
+	}
+	if c.Type == jwt.Program {
+		// A program is addressed by the client id it authenticated as, which is
+		// how the issuer told it apart from every other client. Its subject
+		// carries the same name behind a slash it cannot be asked to lose.
+		p.Kind, p.Name = Programs, c.Azp
+	}
 	// The claims are signed, so this is not a check on the caller — it is a
 	// check on what may become a path segment. A credential's location must not
-	// depend on an issuer never emitting a slash.
-	if !segment(p.Org) || !segment(p.User) {
+	// depend on an issuer never emitting a slash. A person whose subject names
+	// the account rather than its id fails here, which is the right answer
+	// twice over: the slash would leave the tenant, and the username would move
+	// the credential the next time somebody else took the name.
+	if !segment(p.Org) || !segment(p.Name) {
 		return Principal{}, ErrAnonymous
 	}
 	return p, nil
@@ -160,5 +225,5 @@ func with(ctx context.Context, p Principal) context.Context {
 // under an empty tenant.
 func principalOf(ctx context.Context) (Principal, bool) {
 	p, ok := ctx.Value(principalKey{}).(Principal)
-	return p, ok && p.Org != "" && p.User != ""
+	return p, ok && p.Org != "" && p.Kind != "" && p.Name != ""
 }

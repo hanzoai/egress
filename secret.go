@@ -40,10 +40,13 @@ const (
 	ScopeOrg = "org"
 )
 
-// userRef is where a customer's own key lives. Built from the validated
+// ownRef is where a principal's own key lives. Built from the validated
 // principal — this line is the tenant boundary.
-func userRef(p Principal, provider, label string) string {
-	return "orgs/" + p.Org + "/users/" + p.User + "/connectors/" + provider + "/" + label
+//
+// p.Kind is one of two constants and never a claim, so a person and a program
+// cannot be written into each other's half however either is named.
+func ownRef(p Principal, provider, label string) string {
+	return "orgs/" + p.Org + "/" + p.Kind + "/" + p.Name + "/connectors/" + provider + "/" + label
 }
 
 // orgRef is where the tenant's shared platform key lives.
@@ -119,7 +122,7 @@ func newCustody(store Secrets) *custody {
 // It never returns the credential to a caller — only to the call that is about
 // to make an upstream request with it. There is no other reader.
 func (c *custody) resolve(ctx context.Context, p Principal, provider, label string) (string, string, error) {
-	own, err := c.read(ctx, userRef(p, provider, label))
+	own, err := c.read(ctx, ownRef(p, provider, label))
 	if err != nil {
 		return "", "", err
 	}
@@ -141,7 +144,7 @@ func (c *custody) resolve(ctx context.Context, p Principal, provider, label stri
 // spent and never shown — not to the customer who supplied it, not to an
 // operator.
 func (c *custody) enroll(ctx context.Context, p Principal, provider, label, key string) error {
-	if err := c.store.PutSecret(ctx, userRef(p, provider, label), []byte(key)); err != nil {
+	if err := c.store.PutSecret(ctx, ownRef(p, provider, label), []byte(key)); err != nil {
 		return fmt.Errorf("egress: seal: %w", err)
 	}
 	return nil

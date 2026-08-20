@@ -135,9 +135,32 @@ assertions and nothing else, and those are precisely what a service outside the
 cluster must not believe. Callers reach egress at its ROUTE over the ZAP
 transport, which carries a whole request, headers included.
 
-**The custody path is `{user}` = the user id, not the username.** A username can
+**The custody path is `{user}` = the subject, not the username.** A username can
 be given up and taken by somebody else, and a path keyed on one hands the new
 holder the previous holder's credentials.
+
+**A person and a program are filed in different namespaces, and the class comes
+from the issuer.** `orgs/{org}/users/{subject}/…` and `orgs/{org}/apps/{client}/…`.
+Both names are attacker-chosen — anyone may register an account, and whoever
+registers an application picks its client id — so any scheme that flattens the
+two classes into one segment has to keep two chosen values from meeting. The
+obvious flattening, a program's `admin/hanzo-egress` with the slash rewritten to
+the `-` the segment rule already allows, puts them one registration apart: an
+account named `admin-hanzo-egress` lands on the path holding that program's
+provider keys. So they are not flattened; each class gets its own namespace,
+spelled by a constant no claim reaches.
+
+Which class a token belongs to is IAM's `type` claim, which it resolves from the
+grant it answered. It is not inferred, because the inference within reach —
+a subject shaped `owner/name` — is what a person's subject ALSO looks like
+whenever the token names the account rather than its id, and filing those people
+under `apps/` is the collision arriving by the front door.
+
+**The tenant is the `owner` claim and never the subject's first half.** A
+program's subject reads `admin/hanzo-egress`, where `admin` is the org the
+APPLICATION ROW is filed under — the reserved one that means platform sudo —
+while the tenant it acts for is `hanzo`. Splitting the subject for a tenant roots
+every program's credentials in that one org.
 
 **Nothing on the wire may name a tenant or an upstream.** The first comes from
 the token, the second from this host's `-url` configuration. A test pins the

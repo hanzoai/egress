@@ -3,8 +3,8 @@ module github.com/hanzoai/egress
 go 1.26.5
 
 require (
-	github.com/hanzoai/ai v1.833.99
-	github.com/hanzoai/jwt v0.0.0-20260806093505-517c034b1826
+	github.com/hanzoai/ai v1.833.100
+	github.com/hanzoai/jwt v1.0.0
 	github.com/hanzoai/kms/sdk/go v1.1.5
 	github.com/luxfi/keys v1.4.2
 	github.com/luxfi/kms v1.12.20
