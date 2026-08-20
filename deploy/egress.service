@@ -10,11 +10,23 @@ ExecStart=/usr/local/bin/egress
 Restart=always
 RestartSec=2s
 
-# Configuration arrives from this host and nowhere else. The file holds
-# LUX_MNEMONIC — the identity KMS authorizes — so it is root-owned 0400 and
-# lives on the LUKS root. It is the innermost secret on the box; everything
-# else egress touches is fetched with it and never written down.
+# Configuration arrives from this host and nowhere else, and it is only
+# configuration: the identity moved to the sealed credential below, so this file
+# now holds no secret at all. Root-owned 0400 regardless — an endpoint and an
+# audience still describe where this process spends.
 EnvironmentFile=/etc/egress/env
+
+# THE IDENTITY, DECRYPTED BY THE TPM INTO MEMORY AND NOWHERE ELSE.
+#
+# systemd unseals this and places it in %d, a per-service directory that is
+# memory-backed and readable only by this unit. So it is ciphertext on disk,
+# plaintext only inside this process, and absent from the environment — where
+# /proc/<pid>/environ would otherwise hand it to anything running as root.
+#
+# It does not depend on an encrypted root, which is why it holds on a host
+# without one. Seal it with:
+#   systemd-creds encrypt --with-key=tpm2 --name=mnemonic - /etc/egress/mnemonic.cred
+LoadCredentialEncrypted=mnemonic:/etc/egress/mnemonic.cred
 
 User=egress
 Group=egress
