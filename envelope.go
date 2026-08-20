@@ -30,7 +30,7 @@ import (
 	"errors"
 	"fmt"
 
-	record "github.com/luxfi/kms/pkg/store"
+	kms "github.com/luxfi/kms/pkg/store"
 )
 
 // envelope is the credential store with the sealing key in front of it. It is a
