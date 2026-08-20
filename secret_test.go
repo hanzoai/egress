@@ -4,20 +4,30 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"testing"
+
+	kms "github.com/hanzoai/kms/sdk/go"
 )
 
 // store is a credential store a test controls completely. The seam is the same
 // two methods the real KMS client implements, which is the whole reason egress
 // can be exercised without one.
 type store struct {
-	mu    sync.Mutex
-	held  map[string]string
-	fail  error
-	reads int
+	mu sync.Mutex
+	// held is what the store has. A ref that is not here is absent, and the
+	// store says so the way the real one does — with the sentinel, not with a
+	// phrase — so a test cannot pass on wording the store never promised.
+	held map[string]string
+	// fail is returned instead of answering. failOn narrows it to a single
+	// ref, which is what makes it possible to break one custody and watch
+	// whether the other one still gets spent.
+	fail   error
+	failOn string
+	reads  int
 }
 
 func newStore(pairs map[string]string) *store {
@@ -32,12 +42,12 @@ func (s *store) GetSecret(_ context.Context, ref string) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reads++
-	if s.fail != nil {
+	if s.fail != nil && (s.failOn == "" || s.failOn == ref) {
 		return nil, s.fail
 	}
 	v, ok := s.held[ref]
 	if !ok {
-		return nil, errors.New("secret not found")
+		return nil, fmt.Errorf("kmsclient: secret %s: %w", ref, kms.ErrSecretNotFound)
 	}
 	return []byte(v), nil
 }
@@ -167,6 +177,36 @@ func TestAStoreThatCannotAnswerEndsTheCall(t *testing.T) {
 	_, _, err := newCustody(s).resolve(context.Background(), alice, "openai", "default")
 	if err == nil {
 		t.Fatal("a broken store served a call")
+	}
+	if errors.Is(err, ErrNoCredential) {
+		t.Fatal("a fault was reported as an absence")
+	}
+}
+
+// The store reports a fault by echoing the response body, so its text is written
+// by whatever failed — an authorization refusal, a proxy's error page, a tenant
+// that no longer exists. Any of them can contain the words "not found" while
+// meaning the opposite of an absent secret.
+//
+// The cost of confusing them is specific: alice brought her own key, the read of
+// it stuttered, and the fallthrough spends the platform's key instead — then the
+// meter records scope "org", which is the difference between her vendor bill and
+// ours. So the fault must end the call, and it must do so while her key is
+// present and the shared one is sitting right there, resolvable.
+func TestAFaultWordedLikeAnAbsenceDoesNotSpendTheSharedKey(t *testing.T) {
+	s := newStore(map[string]string{
+		userRef(alice, "openai", "default"): "sk-hers",
+		orgRef(alice, "openai", "default"):  "sk-ours",
+	})
+	s.fail = errors.New("kmsclient: status 500: {\"error\":\"upstream tenant not found\"}")
+	s.failOn = userRef(alice, "openai", "default")
+
+	key, scope, err := newCustody(s).resolve(context.Background(), alice, "openai", "default")
+	if err == nil {
+		t.Fatalf("a store fault served a call: resolved %s custody", scope)
+	}
+	if key == "sk-ours" {
+		t.Fatal("her key was unreadable, so ours was spent and billed as intended")
 	}
 	if errors.Is(err, ErrNoCredential) {
 		t.Fatal("a fault was reported as an absence")
