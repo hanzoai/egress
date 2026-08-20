@@ -32,7 +32,7 @@ func serving(t *testing.T, s *store, rpm int) (*Server, jwt.Key) {
 
 	server, err := New(Config{
 		Listen: ":0", Issuer: issuer, JWKS: keys.URL, Audience: audience,
-		KMS: "zap://kms.invalid:9999", KMSOrg: "hanzo", KMSPath: "hanzo/egress",
+		KMS: "zap://kms.invalid:9999", KMSOrg: "hanzo", KMSPath: "hanzo/egress", Recipient: aRecipient(),
 		RPM: rpm, Deadline: 30 * time.Second,
 	}, s, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {

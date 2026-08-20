@@ -55,7 +55,7 @@ func TestACallerCannotNameATenantOrAnUpstream(t *testing.T) {
 func TestTheUpstreamComesFromTheHost(t *testing.T) {
 	cfg := Config{
 		Listen: ":0", Issuer: issuer, JWKS: "https://hanzo.id/jwks", Audience: audience,
-		KMS: "zap://kms:9999", KMSOrg: "hanzo", KMSPath: "hanzo/egress",
+		KMS: "zap://kms:9999", KMSOrg: "hanzo", KMSPath: "hanzo/egress", Recipient: aRecipient(),
 		RPM: 1, Deadline: 1,
 		URLs: map[string]string{"digitalocean": "http://exfiltrate.example"},
 	}
@@ -79,7 +79,7 @@ func TestAnIncoherentConfigurationIsRefused(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cfg := Config{
 				Listen: ":0", Issuer: issuer, JWKS: "https://hanzo.id/jwks", Audience: audience,
-				KMS: "zap://kms:9999", KMSOrg: "hanzo", KMSPath: "hanzo/egress",
+				KMS: "zap://kms:9999", KMSOrg: "hanzo", KMSPath: "hanzo/egress", Recipient: aRecipient(),
 				RPM: 1, Deadline: 1,
 			}
 			edit(&cfg)

@@ -8,13 +8,20 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 
 	"github.com/hanzoai/egress"
+	record "github.com/luxfi/kms/pkg/store"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "mint" {
+		mint()
+		return
+	}
+
 	var cfg egress.Config
 	cfg.Flags(flag.CommandLine)
 	flag.Parse()
@@ -38,4 +45,27 @@ func main() {
 		log.Error("stopped", "error", err.Error())
 		os.Exit(1)
 	}
+}
+
+// mint makes the pair this host is known by, and puts each half where it
+// belongs in one step.
+//
+// The identity goes to STDOUT so it can be piped into the TPM and never exist
+// as a file:
+//
+//	egress mint | systemd-creds encrypt --with-key=tpm2 --name=identity - /etc/egress/identity.cred
+//
+// The recipient goes to STDERR so it is READ, not piped — it is the half that
+// belongs in the environment file, in a manifest, in a commit. Splitting them
+// across the two streams is what makes the safe thing the easy one: the pipe
+// carries the secret straight into hardware, and the operator sees only the
+// half that is safe to see.
+func mint() {
+	identity, recipient, err := kms.Recipient()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "egress: mint:", err)
+		os.Exit(1)
+	}
+	fmt.Fprint(os.Stdout, identity)
+	fmt.Fprintf(os.Stderr, "\nEGRESS_RECIPIENT=%s\n", recipient)
 }

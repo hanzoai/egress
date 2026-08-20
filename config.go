@@ -49,6 +49,14 @@ type Config struct {
 	// derived at and the name KMS authorizes.
 	KMSPath string
 
+	// Recipient is this host's public sealing key, `age1pq1…`. Every credential
+	// in KMS is sealed to it, and it can only seal — the half that opens is the
+	// identity, which never leaves the TPM. So this is public by construction: a
+	// flag, a manifest, a commit are all fine places for it, and that is the
+	// point. Whoever enrols a credential does not thereby become able to read
+	// one.
+	Recipient string
+
 	// IAM is the identity server the HTTP transport exchanges client
 	// credentials at. Required when KMS is an http(s) endpoint, unused when it
 	// is zap:// — the two transports authenticate differently and the store SDK
@@ -87,6 +95,7 @@ func (c *Config) Flags(fs *flag.FlagSet) {
 	fs.StringVar(&c.KMS, "kms", env("EGRESS_KMS", ""), "KMS endpoint, zap://host:port")
 	fs.StringVar(&c.KMSOrg, "kms-org", env("EGRESS_KMS_ORG", "hanzo"), "KMS tenant holding the custody tree")
 	fs.StringVar(&c.KMSPath, "kms-path", env("EGRESS_KMS_PATH", "hanzo/egress"), "this service's identity path")
+	fs.StringVar(&c.Recipient, "recipient", env("EGRESS_RECIPIENT", ""), "this host's public sealing key, age1pq1...")
 	fs.StringVar(&c.IAM, "iam", env("EGRESS_IAM", ""), "IAM endpoint for the http transport")
 	fs.StringVar(&c.ClientID, "client-id", env("EGRESS_CLIENT_ID", ""), "machine identity for the http transport")
 	fs.IntVar(&c.RPM, "rpm", envInt("EGRESS_RPM", 600), "calls per minute per principal")
@@ -102,6 +111,7 @@ func (c *Config) Check() error {
 	for name, v := range map[string]string{
 		"listen": c.Listen, "issuer": c.Issuer, "jwks": c.JWKS,
 		"audience": c.Audience, "kms": c.KMS, "kms-org": c.KMSOrg, "kms-path": c.KMSPath,
+		"recipient": c.Recipient,
 	} {
 		if strings.TrimSpace(v) == "" {
 			missing = append(missing, name)
