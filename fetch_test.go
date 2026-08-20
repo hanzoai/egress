@@ -226,7 +226,7 @@ func TestAFetchWithNoCredentialIsRefused(t *testing.T) {
 // The customer's own key wins over the platform's, same rule as a model call.
 func TestAFetchSpendsTheTenantsOwnKeyWhenThereIsOne(t *testing.T) {
 	s, key := serving(t, newStore(map[string]string{
-		userRef(alice, "digitalocean", "default"): "dop_theirs",
+		ownRef(alice, "digitalocean", "default"): "dop_theirs",
 		orgRef(alice, "digitalocean", "default"):  "dop_ours",
 	}), 100)
 

@@ -132,7 +132,7 @@ func TestACallStreamsTheAnswerThenTheMeter(t *testing.T) {
 
 func TestACallSpendsTheTenantsOwnKeyWhenThereIsOne(t *testing.T) {
 	s, key := serving(t, newStore(map[string]string{
-		userRef(alice, "dummy", "default"): "sk-theirs",
+		ownRef(alice, "dummy", "default"): "sk-theirs",
 		orgRef(alice, "dummy", "default"):  "sk-ours",
 	}), 100)
 
@@ -188,7 +188,7 @@ func TestEnrollingSealsTheKeyAndAnswersWithoutIt(t *testing.T) {
 	if strings.Contains(body, secret) {
 		t.Fatalf("the key came back: %s", body)
 	}
-	if got := s.custody.store.(*store).at(userRef(alice, "openai", "default")); got != secret {
+	if got := s.custody.store.(*store).at(ownRef(alice, "openai", "default")); got != secret {
 		t.Errorf("sealed %q at the customer's path", got)
 	}
 }

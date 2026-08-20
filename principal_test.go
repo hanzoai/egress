@@ -64,7 +64,10 @@ func token(t *testing.T, key jwt.Key, edit func(*jwt.Claims)) string {
 	t.Helper()
 	now := time.Now()
 	claims := &jwt.Claims{
-		User: &jwt.User{Owner: "acme", Name: "alice", Id: "u-7", Email: "alice@acme.example"},
+		// No `id`. IAM does not mint one — it states the subject and nothing
+		// else — and a fixture that carries one tests a token the issuer never
+		// sends.
+		User: &jwt.User{Owner: "acme", Name: "alice", Email: "alice@acme.example"},
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    issuer,
 			Subject:   "u-7",
@@ -104,10 +107,13 @@ func TestTheTenantAndUserComeFromTheToken(t *testing.T) {
 	if p.Org != "acme" {
 		t.Errorf("org = %q, want acme", p.Org)
 	}
-	// The user id, not the username: a username can be given up and taken by
+	// The subject, not the username: a username can be given up and taken by
 	// somebody else, and the custody path must not move with it.
-	if p.User != "u-7" {
-		t.Errorf("user = %q, want the id u-7", p.User)
+	if p.Name != "u-7" {
+		t.Errorf("name = %q, want the subject u-7", p.Name)
+	}
+	if p.Kind != Persons {
+		t.Errorf("kind = %q, want %q", p.Kind, Persons)
 	}
 }
 
@@ -129,9 +135,17 @@ func TestAnUnidentifiableCallerIsRefused(t *testing.T) {
 		"no expiry":       func(c *jwt.Claims) { c.ExpiresAt = nil },
 		"expired":         func(c *jwt.Claims) { c.ExpiresAt = jwt.NewNumericDate(time.Now().Add(-time.Minute)) },
 		"no owner":        func(c *jwt.Claims) { c.Owner = "" },
-		"no user id":      func(c *jwt.Claims) { c.Id = "" },
+		"no subject":      func(c *jwt.Claims) { c.Subject, c.Id = "", "" },
 		"path in owner":   func(c *jwt.Claims) { c.Owner = "acme/../admin" },
-		"path in user id": func(c *jwt.Claims) { c.Id = "../../root" },
+		"path in subject": func(c *jwt.Claims) { c.Subject, c.Id = "../../root", "" },
+		// A person whose subject names the account rather than its id. IAM
+		// resolves that form to a person, so it is not a program — and it must
+		// not become a custody key either, because the next holder of the name
+		// would inherit the credentials filed under it.
+		"named subject": func(c *jwt.Claims) { c.Subject, c.Id = "acme/alice", "" },
+		// A program with no client id has nothing to be addressed by.
+		"program with no client": func(c *jwt.Claims) { c.Type, c.Azp = jwt.Program, "" },
+		"path in client":         func(c *jwt.Claims) { c.Type, c.Azp = jwt.Program, "../../root" },
 	}
 	for name, edit := range tokens {
 		headers[name] = "Bearer " + token(t, key, edit)

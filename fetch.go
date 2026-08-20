@@ -94,7 +94,7 @@ func (s *Server) fetch(ctx context.Context, in *spend.Fetch) (*spend.Fetched, er
 	breaker.Report(err, 0)
 	if err != nil {
 		s.log.Warn("refused",
-			"org", p.Org, "user", p.User, "provider", in.Provider,
+			"org", p.Org, "name", p.Name, "kind", p.Kind, "provider", in.Provider,
 			"method", method, "path", in.Path, "error", scrub(err, key).Error())
 		return nil, scrub(err, key)
 	}
@@ -102,7 +102,7 @@ func (s *Server) fetch(ctx context.Context, in *spend.Fetch) (*spend.Fetched, er
 	out.Scope = scope
 	out.Millis = time.Since(started).Milliseconds()
 	s.log.Info("spend",
-		"org", p.Org, "user", p.User, "provider", in.Provider, "scope", scope,
+		"org", p.Org, "name", p.Name, "kind", p.Kind, "provider", in.Provider, "scope", scope,
 		"method", method, "path", in.Path, "status", out.Status, "millis", out.Millis)
 	return out, nil
 }

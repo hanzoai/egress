@@ -74,7 +74,7 @@ func (s *store) count() int {
 	return s.reads
 }
 
-var alice = Principal{Org: "acme", User: "u-7"}
+var alice = Principal{Org: "acme", Kind: Persons, Name: "u-7"}
 
 func TestSegmentAdmitsOnlyWhatCannotLeaveATenant(t *testing.T) {
 	for _, ok := range []string{"acme", "u-7", "u_7", "openai", "default", "a1", strings.Repeat("a", 64)} {
@@ -110,24 +110,24 @@ func TestSlugNamesTheCredentialOrRefuses(t *testing.T) {
 }
 
 func TestCustodyPathIsBuiltFromThePrincipal(t *testing.T) {
-	bob := Principal{Org: "other", User: "u-9"}
-	if got, want := userRef(alice, "openai", "default"), "orgs/acme/users/u-7/connectors/openai/default"; got != want {
+	bob := Principal{Org: "other", Kind: Persons, Name: "u-9"}
+	if got, want := ownRef(alice, "openai", "default"), "orgs/acme/users/u-7/connectors/openai/default"; got != want {
 		t.Errorf("userRef = %q, want %q", got, want)
 	}
 	if got, want := orgRef(alice, "openai", "default"), "orgs/acme/cloud/openai/default"; got != want {
 		t.Errorf("orgRef = %q, want %q", got, want)
 	}
-	if userRef(alice, "openai", "default") == userRef(bob, "openai", "default") {
+	if ownRef(alice, "openai", "default") == ownRef(bob, "openai", "default") {
 		t.Error("two principals share one custody path")
 	}
-	if !strings.HasPrefix(userRef(bob, "openai", "default"), "orgs/other/") {
+	if !strings.HasPrefix(ownRef(bob, "openai", "default"), "orgs/other/") {
 		t.Error("a principal's path escaped its tenant")
 	}
 }
 
 func TestTheTenantsOwnKeyOutranksTheSharedOne(t *testing.T) {
 	s := newStore(map[string]string{
-		userRef(alice, "openai", "default"): "sk-theirs",
+		ownRef(alice, "openai", "default"): "sk-theirs",
 		orgRef(alice, "openai", "default"):  "sk-ours",
 	})
 	key, scope, err := newCustody(s).resolve(context.Background(), alice, "openai", "default")
@@ -195,11 +195,11 @@ func TestAStoreThatCannotAnswerEndsTheCall(t *testing.T) {
 // present and the shared one is sitting right there, resolvable.
 func TestAFaultWordedLikeAnAbsenceDoesNotSpendTheSharedKey(t *testing.T) {
 	s := newStore(map[string]string{
-		userRef(alice, "openai", "default"): "sk-hers",
+		ownRef(alice, "openai", "default"): "sk-hers",
 		orgRef(alice, "openai", "default"):  "sk-ours",
 	})
 	s.fail = errors.New("kmsclient: status 500: {\"error\":\"upstream tenant not found\"}")
-	s.failOn = userRef(alice, "openai", "default")
+	s.failOn = ownRef(alice, "openai", "default")
 
 	key, scope, err := newCustody(s).resolve(context.Background(), alice, "openai", "default")
 	if err == nil {
@@ -217,7 +217,7 @@ func TestAFaultWordedLikeAnAbsenceDoesNotSpendTheSharedKey(t *testing.T) {
 // which one is resident here, so every call reads it again — which is also why
 // a key rewritten in KMS is spent on the next call rather than the next minute.
 func TestACredentialIsNotKeptBetweenCalls(t *testing.T) {
-	s := newStore(map[string]string{userRef(alice, "openai", "default"): "sk-theirs"})
+	s := newStore(map[string]string{ownRef(alice, "openai", "default"): "sk-theirs"})
 	c := newCustody(s)
 
 	for i := 1; i <= 3; i++ {
@@ -231,7 +231,7 @@ func TestACredentialIsNotKeptBetweenCalls(t *testing.T) {
 }
 
 func TestEnrollingReplacesWhatWasHeld(t *testing.T) {
-	s := newStore(map[string]string{userRef(alice, "openai", "default"): "sk-old"})
+	s := newStore(map[string]string{ownRef(alice, "openai", "default"): "sk-old"})
 	c := newCustody(s)
 
 	if key, _, _ := c.resolve(context.Background(), alice, "openai", "default"); key != "sk-old" {
@@ -254,7 +254,7 @@ func TestEnrollingWritesUnderTheEnrollersOwnPath(t *testing.T) {
 	if err := newCustody(s).enroll(context.Background(), alice, "openai", "default", "sk-theirs"); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.at(userRef(alice, "openai", "default")); got != "sk-theirs" {
+	if got := s.at(ownRef(alice, "openai", "default")); got != "sk-theirs" {
 		t.Errorf("key landed at %q", got)
 	}
 	if got := s.at(orgRef(alice, "openai", "default")); got != "" {

@@ -131,7 +131,7 @@ func (s *Server) limit(c *zip.Ctx) error {
 	if !ok {
 		return zip.ErrUnauthorized("not identified")
 	}
-	if !s.limiter.admit(p.Org + "/" + p.User) {
+	if !s.limiter.admit(p.Org + "/" + p.Kind + "/" + p.Name) {
 		return zip.Errorf(http.StatusTooManyRequests, "too many calls")
 	}
 	return c.Next()
@@ -163,13 +163,13 @@ func (s *Server) call(c *zip.Ctx) error {
 		meter, err := s.spend(context.Background(), p, &in, out)
 		if err != nil {
 			s.log.Warn("refused",
-				"org", p.Org, "user", p.User,
+				"org", p.Org, "name", p.Name, "kind", p.Kind,
 				"provider", in.Provider, "model", in.Model, "error", err.Error())
 			out.emit("error", map[string]string{"error": err.Error()})
 			return
 		}
 		s.log.Info("spend",
-			"org", p.Org, "user", p.User,
+			"org", p.Org, "name", p.Name, "kind", p.Kind,
 			"provider", meter.Provider, "model", meter.Model, "scope", meter.Scope,
 			"prompt", meter.Prompt, "completion", meter.Completion, "total", meter.Total,
 			"price", meter.Price, "currency", meter.Currency, "millis", meter.Millis)
@@ -219,10 +219,10 @@ func (s *Server) enroll(ctx context.Context, in *Enroll) (*Enrolled, error) {
 		return nil, zip.ErrBadRequest("key is empty")
 	}
 	if err := s.custody.enroll(ctx, p, provider, label, in.Key); err != nil {
-		s.log.Warn("enroll failed", "org", p.Org, "user", p.User, "provider", provider)
+		s.log.Warn("enroll failed", "org", p.Org, "name", p.Name, "kind", p.Kind, "provider", provider)
 		return nil, zip.ErrInternal("could not seal the key")
 	}
-	s.log.Info("enrolled", "org", p.Org, "user", p.User, "provider", provider, "label", label)
+	s.log.Info("enrolled", "org", p.Org, "name", p.Name, "kind", p.Kind, "provider", provider, "label", label)
 	return &Enrolled{Provider: in.Provider, Label: label, Scope: ScopeUser}, nil
 }
 
