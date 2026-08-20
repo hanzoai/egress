@@ -227,6 +227,32 @@ store, so something answering in its place is not yet distinguishable — the
 credential cannot be taken, but a substitute can be offered. See §9 of
 `docs/architecture.md`.
 
+## The module must resolve on GitHub
+
+`github.com/hanzoai/egress` is mirrored public on GitHub, and that is load-bearing
+rather than decorative: it is how every consumer's CI fetches `spend`.
+
+A build container has no `insteadOf` rewrite. A developer machine usually does —
+`url.https://git.hanzo.ai/hanzoai/.insteadOf https://github.com/hanzoai/` — so a
+missing mirror builds fine locally and fails in CI with
+`fatal: repository 'https://github.com/hanzoai/egress/' not found`. That is
+exactly how visor's image build went red on every commit for an afternoon while
+`go build ./...` passed on the machine that wrote it.
+
+So: **every push to the forge must also reach GitHub, tags included.** `spend` is
+resolved by its own tag (`spend/vX.Y.Z`), so pushing `main` without `--tags`
+leaves consumers unable to resolve a version that exists. `origin` in this
+checkout has both push URLs; a checkout that does not is one push away from
+breaking every consumer.
+
+Verify a version really resolves the way CI will — clean HOME, no rewrite:
+
+    HOME=$(mktemp -d) GOPATH=$(mktemp -d) go get github.com/hanzoai/egress/spend@vX.Y.Z
+
+The nine hanzoai modules visor already imports are all public on GitHub for the
+same reason. `hanzoai/kms` is the exception, and it is why egress's own release
+job cannot fetch its SDK — see the release note below.
+
 ## Verifying
 
 `GOWORK=off go test -race ./...`. The suite runs against a fake `Secrets` and a
