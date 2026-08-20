@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/hanzoai/egress/spend"
 	"github.com/hanzoai/jwt"
 )
 
@@ -34,7 +35,7 @@ func trust(s *Server, cfg *tls.Config) {
 }
 
 // fetched is one cloud call through the real router.
-func fetched(t *testing.T, s *Server, key jwt.Key, in Fetch) (int, string) {
+func fetched(t *testing.T, s *Server, key jwt.Key, in spend.Fetch) (int, string) {
 	t.Helper()
 	return ask(t, s, http.MethodPost, "/v1/fetch", token(t, key, nil), in)
 }
@@ -56,7 +57,7 @@ func TestAFetchSpendsTheKeyUpstreamAndNeverReturnsIt(t *testing.T) {
 		_, _ = w.Write([]byte(`{"droplets":[]}`))
 	})
 
-	code, body := fetched(t, s, key, Fetch{
+	code, body := fetched(t, s, key, spend.Fetch{
 		Provider: "DigitalOcean", Method: "GET", Path: "/v2/droplets?page=2",
 	})
 	if code != http.StatusOK {
@@ -75,9 +76,9 @@ func TestAFetchSpendsTheKeyUpstreamAndNeverReturnsIt(t *testing.T) {
 		t.Fatal("the credential travelled to the caller")
 	}
 
-	var out Fetched
+	var out spend.Fetched
 	if err := json.Unmarshal([]byte(body), &out); err != nil {
-		t.Fatalf("answer is not a Fetched: %v — %s", err, body)
+		t.Fatalf("answer is not a spend.Fetched: %v — %s", err, body)
 	}
 	if out.Status != http.StatusOK {
 		t.Errorf("status = %d", out.Status)
@@ -122,7 +123,7 @@ func TestAFetchCannotBeAimedAtAnotherHost(t *testing.T) {
 		"",
 	} {
 		t.Run(path, func(t *testing.T) {
-			code, body := fetched(t, s, key, Fetch{
+			code, body := fetched(t, s, key, spend.Fetch{
 				Provider: "DigitalOcean", Method: "GET", Path: path,
 			})
 			if code == http.StatusOK {
@@ -154,14 +155,14 @@ func TestAFetchDoesNotFollowARedirect(t *testing.T) {
 	})
 	trust(s, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // test only
 
-	code, body := fetched(t, s, key, Fetch{Provider: "DigitalOcean", Method: "GET", Path: "/v2/droplets"})
+	code, body := fetched(t, s, key, spend.Fetch{Provider: "DigitalOcean", Method: "GET", Path: "/v2/droplets"})
 	if code != http.StatusOK {
 		t.Fatalf("code = %d, body %s", code, body)
 	}
 	if followed.Load() {
 		t.Fatal("the redirect was followed — the upstream chose where the next request went")
 	}
-	var out Fetched
+	var out spend.Fetched
 	if err := json.Unmarshal([]byte(body), &out); err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +179,7 @@ func TestAFetchRefusesACloudItCannotCarry(t *testing.T) {
 	}), 100)
 	s.cfg.URLs = map[string]string{"aws": "https://ec2.amazonaws.com"}
 
-	code, body := fetched(t, s, key, Fetch{Provider: "AWS", Method: "GET", Path: "/"})
+	code, body := fetched(t, s, key, spend.Fetch{Provider: "AWS", Method: "GET", Path: "/"})
 	if code == http.StatusOK {
 		t.Fatalf("AWS was served: %s", body)
 	}
@@ -198,7 +199,7 @@ func TestAFetchRefusesAnUnconfiguredUpstream(t *testing.T) {
 		orgRef(alice, "digitalocean", "default"): "dop_v1_secret",
 	}), 100)
 
-	code, body := fetched(t, s, key, Fetch{Provider: "DigitalOcean", Method: "GET", Path: "/v2/droplets"})
+	code, body := fetched(t, s, key, spend.Fetch{Provider: "DigitalOcean", Method: "GET", Path: "/v2/droplets"})
 	if code == http.StatusOK {
 		t.Fatalf("served with no upstream configured: %s", body)
 	}
@@ -215,7 +216,7 @@ func TestAFetchWithNoCredentialIsRefused(t *testing.T) {
 		t.Error("an upstream call was made with no credential")
 	})
 
-	if code, body := fetched(t, s, key, Fetch{
+	if code, body := fetched(t, s, key, spend.Fetch{
 		Provider: "DigitalOcean", Method: "GET", Path: "/v2/droplets",
 	}); code == http.StatusOK {
 		t.Fatalf("served with no credential: %s", body)
@@ -235,11 +236,11 @@ func TestAFetchSpendsTheTenantsOwnKeyWhenThereIsOne(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	})
 
-	_, body := fetched(t, s, key, Fetch{Provider: "DigitalOcean", Method: "GET", Path: "/v2/droplets"})
+	_, body := fetched(t, s, key, spend.Fetch{Provider: "DigitalOcean", Method: "GET", Path: "/v2/droplets"})
 	if saw != "Bearer dop_theirs" {
 		t.Errorf("spent %q — not the customer's own key", saw)
 	}
-	var out Fetched
+	var out spend.Fetched
 	_ = json.Unmarshal([]byte(body), &out)
 	if out.Scope != ScopeUser {
 		t.Errorf("scope = %q, want %q", out.Scope, ScopeUser)
@@ -261,7 +262,7 @@ func TestALabelPicksTheAccount(t *testing.T) {
 	})
 
 	for label, want := range map[string]string{"": "Bearer dop_default", "spare": "Bearer dop_spare"} {
-		fetched(t, s, key, Fetch{Provider: "DigitalOcean", Label: label, Method: "GET", Path: "/v2/droplets"})
+		fetched(t, s, key, spend.Fetch{Provider: "DigitalOcean", Label: label, Method: "GET", Path: "/v2/droplets"})
 		if saw != want {
 			t.Errorf("label %q spent %q, want %q", label, saw, want)
 		}
@@ -279,7 +280,7 @@ func TestAFetchRefusesAMethodNoCloudUses(t *testing.T) {
 	})
 
 	for _, method := range []string{"CONNECT", "TRACE", "OPTIONS", "", "GET /x"} {
-		if code, body := fetched(t, s, key, Fetch{
+		if code, body := fetched(t, s, key, spend.Fetch{
 			Provider: "DigitalOcean", Method: method, Path: "/v2/droplets",
 		}); code == http.StatusOK {
 			t.Errorf("method %q was served: %s", method, body)
@@ -296,7 +297,7 @@ func TestAFetchWillNotReadAnUnboundedAnswer(t *testing.T) {
 		_, _ = w.Write(make([]byte, mostBody+1))
 	})
 
-	code, body := fetched(t, s, key, Fetch{Provider: "DigitalOcean", Method: "GET", Path: "/v2/droplets"})
+	code, body := fetched(t, s, key, spend.Fetch{Provider: "DigitalOcean", Method: "GET", Path: "/v2/droplets"})
 	if code == http.StatusOK {
 		t.Fatalf("an oversized answer was served: %d bytes", len(body))
 	}
@@ -314,10 +315,10 @@ func TestAnAnswerThatIsNotJSONStillLeavesAsJSON(t *testing.T) {
 		_, _ = w.Write([]byte("<html>502 Bad Gateway</html>"))
 	})
 
-	_, body := fetched(t, s, key, Fetch{Provider: "DigitalOcean", Method: "GET", Path: "/v2/droplets"})
-	var out Fetched
+	_, body := fetched(t, s, key, spend.Fetch{Provider: "DigitalOcean", Method: "GET", Path: "/v2/droplets"})
+	var out spend.Fetched
 	if err := json.Unmarshal([]byte(body), &out); err != nil {
-		t.Fatalf("answer is not a Fetched: %v — %s", err, body)
+		t.Fatalf("answer is not a spend.Fetched: %v — %s", err, body)
 	}
 	if out.Status != http.StatusBadGateway {
 		t.Errorf("status = %d", out.Status)
@@ -346,7 +347,7 @@ func TestAFetchCarriesTheBody(t *testing.T) {
 		_, _ = w.Write([]byte(`{"droplet":{"id":1}}`))
 	})
 
-	code, body := fetched(t, s, key, Fetch{
+	code, body := fetched(t, s, key, spend.Fetch{
 		Provider: "DigitalOcean", Method: "POST", Path: "/v2/droplets",
 		Body: json.RawMessage(`{"name":"web-1","size":"s-1vcpu-1gb"}`),
 	})

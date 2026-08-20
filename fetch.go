@@ -10,57 +10,11 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/hanzoai/egress/spend"
 	"github.com/zap-proto/zip"
 	"strings"
 	"time"
 )
-
-// Fetch is one request to spend a cloud credential upstream.
-//
-// It is the second thing egress sells and the first that is not a model. A
-// model call streams tokens through a dialect; a cloud call is one request and
-// one answer, which is why this is a typed op and `Call` is not. What the two
-// share is everything that matters — the same door, the same ceiling, the same
-// custody, the same redaction — because custody is orthogonal to shape.
-//
-// Notice what is absent, and it is the same list as `Call`. There is no org and
-// no user: those come from the verified token, because a caller that could name
-// a tenant could spend another tenant's key. There is no host: that comes from
-// this host's configuration, because a caller that could name the far end could
-// have the credential delivered to it. And there are no headers: a caller that
-// could write a header could write the one that carries the credential.
-type Fetch struct {
-	// Provider is the cloud, spelled as the estate spells it: "DigitalOcean",
-	// "Hetzner". It selects the credential and the upstream, so a key enrolled
-	// for one cloud cannot be spent against another.
-	Provider string `json:"provider" url:"-" validate:"required"`
-	// Label picks between several accounts on one cloud. Empty means "default".
-	// This is what lets an org hold two DigitalOcean accounts and spend the one
-	// it means to.
-	Label string `json:"label" url:"-"`
-	// Method is the HTTP method.
-	Method string `json:"method" url:"-" validate:"required"`
-	// Path is the request path, query included: "/v2/droplets?page=2". It is a
-	// path and never a URL — see reference, which is the line that keeps it one.
-	Path string `json:"path" url:"-" validate:"required"`
-	// Body is the request body, and it is JSON because every cloud API egress
-	// carries speaks JSON. A shape that cannot be spelled in JSON is a reason to
-	// teach egress that provider, not a reason for a bytes field.
-	Body json.RawMessage `json:"body" url:"-"`
-}
-
-// Fetched is what the upstream answered: its status, and its body.
-//
-// The status is returned rather than translated. A 404 from a cloud is a fact
-// about the caller's request, not a failure of egress, and flattening the two
-// would leave a caller unable to tell "your cluster is gone" from "the credential
-// store is down" — which are opposite instructions.
-type Fetched struct {
-	Status int             `json:"status"`
-	Body   json.RawMessage `json:"body"`
-	Scope  string          `json:"scope"`
-	Millis int64           `json:"millis"`
-}
 
 // carried lists the clouds egress knows how to pay for, and how.
 //
@@ -96,7 +50,7 @@ var verbs = map[string]bool{
 const mostBody = 1 << 20
 
 // fetch makes one cloud call on the caller's behalf and returns what came back.
-func (s *Server) fetch(ctx context.Context, in *Fetch) (*Fetched, error) {
+func (s *Server) fetch(ctx context.Context, in *spend.Fetch) (*spend.Fetched, error) {
 	p, ok := principalOf(ctx)
 	if !ok {
 		return nil, zip.ErrUnauthorized("not identified")
@@ -156,7 +110,7 @@ func (s *Server) fetch(ctx context.Context, in *Fetch) (*Fetched, error) {
 // send makes the upstream request. The credential exists only inside this
 // function and on the request it builds; it is not returned, not logged, and
 // scrubbed out of anything that is.
-func (s *Server) send(ctx context.Context, method, target, key string, sent []byte) (*Fetched, error) {
+func (s *Server) send(ctx context.Context, method, target, key string, sent []byte) (*spend.Fetched, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.Deadline)
 	defer cancel()
 
@@ -190,7 +144,7 @@ func (s *Server) send(ctx context.Context, method, target, key string, sent []by
 	if len(read) > mostBody {
 		return nil, fmt.Errorf("egress: answer is larger than %d bytes", mostBody)
 	}
-	return &Fetched{Status: resp.StatusCode, Body: body(read)}, nil
+	return &spend.Fetched{Status: resp.StatusCode, Body: body(read)}, nil
 }
 
 // body makes what came back safe to hand a caller expecting JSON. A cloud
