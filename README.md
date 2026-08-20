@@ -44,13 +44,17 @@ custody and nothing else:
 every volume in DOKS. Egress running there would hold a decrypted key inside the
 blast radius it exists to escape.
 
-It runs on hosts we provision with a LUKS root whose passphrase never enters any
-cloud. Then a snapshot, a detached volume, a reboot and DO's own password reset
-all yield ciphertext — the last because it must write `/etc/shadow`, which is
-inside the encrypted volume.
+It runs on metal we own, because renting the escape hatch from the provider it
+escapes puts it back inside. The root is sealed to the machine's TPM under a PCR
+policy: no passphrase exists for anyone to know or type, the disk opens only on
+that board under the boot chain we signed, and a changed binary measures
+differently and is refused. Every provider key is encrypted to a key that cannot
+leave that TPM before it is written anywhere, so what KMS stores is ciphertext
+KMS cannot open.
 
-Honest limit: a RUNNING host is decrypted. LUKS defends disks at rest, not a
-live process. Sandboxing, keys-not-in-environment and change review cover that.
+Honest limit: a RUNNING host holds the key in memory. A TPM seals storage, not
+RAM — only SEV-SNP or TDX closes that, and it is a machine to buy rather than an
+architecture to change. See `deploy/README.md`.
 
 ## Callers hold no key
 
