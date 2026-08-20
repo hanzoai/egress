@@ -165,6 +165,58 @@ before egress serves and the fleet 401s.
 
 Steps 1-3 are reversible. Step 5 is not, until step 6 completes.
 
+## Cutover — the cloud plane
+
+A cloud key cuts more cleanly than a model key, and the reason is step 4 above:
+the relay hardcodes most vendors' endpoints, so repointing a model caller is not
+a URL change. A cloud caller has no such problem. `visor` builds every provider
+client over one `*http.Client` from `service/transport.go`, so pointing it here
+is a transport swap — `service.RegisterCarrier`, wired by `carry()` from
+`egressAddress` + `egressToken`. That seam is the one place, which is exactly
+what step 4 says a clean cut needs.
+
+What holds the DigitalOcean key today:
+
+| where | what |
+|---|---|
+| KMS `hanzo/prod/visor-config` | `DIGITALOCEAN_ACCESS_TOKEN`, the only source of the value |
+| `KMSSecret hanzo/visor-kms-sync` | syncs it into the Secret every 600s |
+| Secret `hanzo/visor-config` | plaintext to anyone with cluster read |
+| Deployment `hanzo/visor` | reads it as env |
+| Deployment `hanzo/bot-gateway` | **reads it as env too** |
+
+**`bot-gateway` is the one that blocks a clean delete.** It has no carrier: it
+takes the token from its environment and calls DigitalOcean itself. Repointing
+visor and deleting the Secret breaks it. Either it grows a carrier of its own —
+it is the same `spend.Client` swap, since `spend.Client` returns an
+`*http.Client` — or the delete waits for it.
+
+Order, and it is the same shape as the model plane:
+
+1. **Serve**, as above.
+2. **Seal** the cloud key at `orgs/<org>/cloud/digitalocean/default` — the org
+   scope, since it is the platform's account rather than a customer's. `POST
+   /v1/enroll` with `{"provider":"DigitalOcean","key":"…"}`. Write-only: there
+   is no route that reads one back.
+3. **Prove** with a real call, not a health check:
+   `POST /v1/fetch {"provider":"DigitalOcean","method":"GET","path":"/v2/account"}`
+   answers 200 and an account. Then `"/v2/droplets?per_page=1"`, which proves a
+   query and a non-trivial body.
+4. **Cut** — set `egressAddress` and `egressToken` on visor. Both, or it refuses
+   to start: an address without a token would 401 every cloud call, and the
+   obvious repair for that is to put the key back.
+5. **Delete** `DIGITALOCEAN_ACCESS_TOKEN` from the KMS path FIRST, then the key
+   from the `KMSSecret`'s list. Deleting the Secret alone accomplishes nothing —
+   the sync rewrites it within 600 seconds.
+6. **Rotate**, same reasoning as above.
+
+**DigitalOcean's inference API is the model plane, not this one.** Its key
+(`doo_v1_…`, distinct from the `dop_v1_…` cloud token) serves an
+OpenAI-compatible surface at `https://inference.do-ai.run/v1`. It needs no new
+code: enrol it as an OpenAI-dialect provider and point `EGRESS_URLS` at that
+base. DigitalOcean is one of the few vendors whose `ProviderUrl` the relay
+actually honours, so this is one of the model cuts that IS a URL change.
+
 ## Verifying
 
 ```
