@@ -13,7 +13,7 @@ import (
 	"os"
 
 	"github.com/hanzoai/egress"
-	record "github.com/luxfi/kms/pkg/store"
+	kms "github.com/luxfi/kms/pkg/store"
 )
 
 func main() {

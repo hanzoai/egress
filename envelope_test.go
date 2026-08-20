@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	record "github.com/luxfi/kms/pkg/store"
+	kms "github.com/luxfi/kms/pkg/store"
 )
 
 const sealedRef = "orgs/acme/users/u-7/connectors/openai/default"
