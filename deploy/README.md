@@ -104,8 +104,22 @@ before egress serves and the fleet 401s.
 3. **Prove.** Point one caller at egress and confirm a real inference call
    round-trips, streaming included. Not a health check: a status code is not a
    working call.
-4. **Cut.** Repoint callers. `OPENROUTER_URL` is already a plain env value in
-   cloud's Deployment, so this is a URL change, not a new flag.
+4. **Cut.** Repoint callers — and this is NOT a URL change. Two things have to
+   be true before it can be, and neither is today:
+
+   - **The relay ignores the provider URL for most vendors.** `ai`'s
+     `resolveEndpointForPath` hardcodes the endpoint for OpenRouter, Fireworks,
+     Grok, Gemini, Jina, Cohere and Moonshot, honouring `ProviderUrl` only for
+     OpenAI, Azure, Local/Ollama/DigitalOcean and the default. On the dialect
+     side the constructors take no URL argument at all. So setting a URL to point
+     here leaves the caller dialing the vendor with its key still in the header
+     while the configuration claims otherwise — a caller that keeps its key and
+     reports that it does not, which is worse than not moving.
+   - **`OPENROUTER_URL` is not read by cloud's Go source.** It decides only
+     whether a model family exists at all; the name appears in no call path.
+
+   What a cut actually needs: one place in `ai` that authorizes an outbound call,
+   so repointing is a swap of that one thing rather than of every caller.
 5. **Delete.** Only now remove the provider keys from the thirteen Secrets
    across three clusters:
    - `hanzo-k8s` — `hanzo/cloud-api-llm-keys`, `hanzo/llm-secrets`,
