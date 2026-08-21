@@ -111,14 +111,33 @@ lang)` makes the upstream call and streams into an `io.Writer`. No web framework
 no database. The writer must also have `Flush()`; every dialect checks for it
 before anything else.
 
-That covers the text path. It does NOT cover tool calls or vision: in `ai` those
-go down a second road, `controllers.proxyToolRequest`, which is a method on a
-web controller that writes to `c.Ctx.ResponseWriter` and returns nothing. It
-cannot be imported. Serving them through egress needs an extraction in `ai`
-first — `resolveEndpointForPath`, `resolveUpstreamEndpoint`, `proxyToolRequest`
-and `streamCaptureUsage` moved into a leaf package taking an
-`http.ResponseWriter` and a `context.Context`. Copying them here instead is the
-one thing the first law forbids.
+**Where a call goes, and how it proves it may, import cleanly too.**
+`github.com/hanzoai/ai/upstream` is a leaf on `object` and the standard library:
+`Endpoint(provider, path)` answers the address and `Authorize(req, provider)`
+applies the credential and returns nothing. Both lived inside `controllers`,
+which nothing outside can import, and the extraction was made for this door.
+Import them; do not restate an address or an auth scheme here. The rule that
+keeps the credential in one place now parses `controllers` AND `upstream`, so a
+copy made here would not be caught by it — the first law is the only thing
+guarding this side.
+
+That covers the text path, the address and the credential. It does NOT cover
+tool calls or vision. In `ai` those go down a second road,
+`controllers.proxyAnthropicToolRequest`, and the earlier note here named three
+functions that do not exist — `resolveEndpointForPath`,
+`resolveUpstreamEndpoint`, `proxyToolRequest`. The real shape is one method on a
+web controller that writes to `c.Ctx.ResponseWriter`, holds a budget and bills,
+so most of it is controller work and should stay there.
+
+What is genuinely reusable is the translation beneath it:
+`controllers/anthropic_translate.go` is 802 lines and 21 functions, and the
+whole file is pure — no controller, no http, no object, no iam. It needs exactly
+two things from its package: `AnthropicContentBlock` and a four-line `text`
+helper. Extracting it means moving the Anthropic wire types with it, and those
+carry 21 references across 6 files for `AnthropicRequest` alone, on the live
+`/v1/messages` path. That is the next move and it is a typed migration, not a
+file move. Copying the translation here instead is the one thing the first law
+forbids.
 
 **The gateway's limiter does not exist.** `apps/gateway/edge` measures traffic —
 `Observe` returns counts — and never admits or refuses; the thresholds live in
