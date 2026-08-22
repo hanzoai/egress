@@ -46,6 +46,12 @@ DynamicUser=no
 
 # A provider key exists only in this process's memory. These stop it reaching
 # anywhere it could be read back.
+#
+# LimitMEMLOCK is what lets the process pin every page it holds: without it
+# mlockall fails, egress refuses to start, and it refuses on purpose — the
+# kernel may page anonymous memory to swap whenever it likes, and a key that has
+# been swapped is a key on a disk that outlives the process.
+LimitMEMLOCK=infinity
 LimitCORE=0
 PrivateTmp=yes
 PrivateDevices=yes

@@ -44,6 +44,45 @@ egress mint | systemd-creds encrypt --with-key=host --name=identity - /etc/egres
 LoadCredentialEncrypted=identity:/etc/egress/identity.cred
 ```
 
+`--with-key` is the choice, and it is an operator's rather than a code change:
+
+| `--with-key=` | what holds the wrapping key | when |
+|---|---|---|
+| `host` | `/var/lib/systemd/credential.secret`, on the LUKS root | the default: no special hardware |
+| `tpm2` | the TPM, optionally under a PCR policy | when the board has one and measured boot is wanted |
+| `auto` | tpm2 where present, host otherwise | a fleet with both |
+
+Egress reads `$CREDENTIALS_DIRECTORY` either way, so it never learns which was
+used and nothing in it changes when the choice does. A cloud KMS or a PKCS#11
+HSM is the same shape one step out — the wrapping key lives in the HSM and
+`Decrypt` is a call — but systemd cannot reach either, so it is an integration
+to write rather than a flag to set. It is worth writing where egress runs on GCP
+or AWS with an attached identity: the wrapping key is then non-exportable AND
+there is no key file on the host at all, which is stronger than the host key
+above.
+
+**Nothing is kept, so replicas are interchangeable.** Egress holds no credential
+and no session; what it keeps is configuration and a bounded cache. Run as many
+as the load wants, behind whatever balancer, and delete a suspect one instead of
+investigating it — there is nothing on it to investigate. It does one job:
+attach a credential to a described call and return what the upstream said.
+
+**Memory is pinned, so a key cannot be swapped to disk.** The unit grants
+`LimitMEMLOCK=infinity` and the process calls `mlockall(MCL_CURRENT|MCL_FUTURE)`
+before it opens the store — before the credential exists, because locking after
+a secret is in memory locks it too late. Without the grant it refuses to start.
+That is deliberate: "best effort" would mean the guarantee holds on some hosts
+and not others, with nothing to say which, and the operator learning it from a
+forensics report. Swap was the last way a key reached a disk; the unit already
+refuses core dumps, mounts no writable path and hides /proc, and this service
+writes no file.
+
+**Memory encryption is reported, never assumed.** Pinning keeps a key off the
+disk and does nothing about the DRAM, which root on a live box, a DMA-capable
+port or a cold-boot attack still reaches. `MemoryEncryption()` reads
+`/sys/kernel/coco/status` and reports `sev-snp`, `tdx` or `none` in the boot
+line, so a deployment that needs one can be held to it.
+
 **No credential is ever plaintext on disk or in the environment.** The mnemonic
 derives the key that unlocks every provider credential, and it used to sit in
 `/etc/egress/env` as plaintext AND in this process's environment, where

@@ -28,6 +28,14 @@ func main() {
 
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
+	// BEFORE THE STORE, because the credential does not exist yet. Locking after
+	// a secret is in memory locks it too late — the page it was written to may
+	// already have been swapped.
+	if err := egress.LockMemory(); err != nil {
+		log.Error("refusing to serve", "error", err.Error())
+		os.Exit(1)
+	}
+
 	store, close, err := egress.Vault(cfg)
 	if err != nil {
 		log.Error("cannot open the credential store", "error", err.Error())
@@ -40,7 +48,8 @@ func main() {
 		log.Error("cannot serve", "error", err.Error())
 		os.Exit(1)
 	}
-	log.Info("serving", "listen", cfg.Listen, "issuer", cfg.Issuer, "kms", cfg.KMS)
+	log.Info("serving", "listen", cfg.Listen, "issuer", cfg.Issuer, "kms", cfg.KMS,
+		"memory", "locked", "memory_encryption", egress.MemoryEncryption())
 	if err := server.Listen(); err != nil {
 		log.Error("stopped", "error", err.Error())
 		os.Exit(1)
