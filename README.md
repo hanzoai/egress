@@ -45,16 +45,16 @@ every volume in DOKS. Egress running there would hold a decrypted key inside the
 blast radius it exists to escape.
 
 It runs on metal we own, because renting the escape hatch from the provider it
-escapes puts it back inside. The root is sealed to the machine's TPM under a PCR
-policy: no passphrase exists for anyone to know or type, the disk opens only on
-that board under the boot chain we signed, and a changed binary measures
-differently and is refused. Every provider key is encrypted to a key that cannot
-leave that TPM before it is written anywhere, so what KMS stores is ciphertext
-KMS cannot open.
+escapes puts it back inside. A provider API key buys calls at that vendor and
+reaches this host not at all: there is no console to open, no root password to
+reset and no snapshot of its disk to take. The root is LUKS2, so a disk that
+leaves the rack is ciphertext, and every provider key is encrypted to a key that
+never leaves this host in the clear before it is written anywhere — so what KMS
+stores is ciphertext KMS cannot open.
 
-Honest limit: a RUNNING host holds the key in memory. A TPM seals storage, not
-RAM — only SEV-SNP or TDX closes that, and it is a machine to buy rather than an
-architecture to change. See `deploy/README.md`.
+Honest limits: a RUNNING host holds the key in memory, which only SEV-SNP or TDX
+closes; and with no TPM nothing measures the code, so the disk does not refuse to
+unlock for a changed binary. See `deploy/README.md`.
 
 ## Callers hold no key
 

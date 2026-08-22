@@ -50,10 +50,10 @@ func main() {
 // mint makes the pair this host is known by, and puts each half where it
 // belongs in one step.
 //
-// The identity goes to STDOUT so it can be piped into the TPM and never exist
-// as a file:
+// The identity goes to STDOUT so it can be piped straight into the encrypted
+// credential and never exist as a plaintext file:
 //
-//	egress mint | systemd-creds encrypt --with-key=tpm2 --name=identity - /etc/egress/identity.cred
+//	egress mint | systemd-creds encrypt --with-key=host --name=identity - /etc/egress/identity.cred
 //
 // The recipient goes to STDERR so it is READ, not piped — it is the half that
 // belongs in the environment file, in a manifest, in a commit. Splitting them

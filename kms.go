@@ -68,7 +68,7 @@ func Vault(cfg Config) (Secrets, func(), error) {
 
 	// The store keeps what it is given; the seal decides what that is worth.
 	// Every credential crossing this line is already sealed to this host, so KMS
-	// holds ciphertext and the key that opens it never left the TPM. See
+	// holds ciphertext and the key that opens it never left this host. See
 	// envelope.go for why that is the arrangement rather than trusting the store.
 	me, err := sealed("identity")
 	if err != nil {
@@ -105,11 +105,12 @@ func overZAP(endpoint string) bool {
 // identity was the one credential exempting itself from the rule it exists to
 // enforce.
 //
-// systemd decrypts a LoadCredentialEncrypted unit credential with the TPM and
-// places it in a per-service directory that is memory-backed and readable only
-// by this unit. So the value is ciphertext on disk, plaintext only in this
-// process, and absent from the environment entirely. That property does not
-// depend on an encrypted root, which is why it holds on a host that has none.
+// systemd decrypts a LoadCredentialEncrypted unit credential and places it in a
+// per-service directory that is memory-backed and readable only by this unit. So
+// the value is ciphertext on disk, plaintext only in this process, and absent
+// from the environment entirely. --with-key=host binds it to this machine's own
+// key under /var/lib/systemd, which sits on the LUKS root: encrypted at rest
+// twice over, and a disk read without the passphrase yields neither half.
 //
 // No environment fallback. One way to hold it, or the service does not start.
 func sealed(name string) (string, error) {

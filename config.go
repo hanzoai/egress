@@ -51,7 +51,8 @@ type Config struct {
 
 	// Recipient is this host's public sealing key, `age1pq1…`. Every credential
 	// in KMS is sealed to it, and it can only seal — the half that opens is the
-	// identity, which never leaves the TPM. So this is public by construction: a
+	// identity, which never leaves this host in the clear. So this is public by
+	// construction: a
 	// flag, a manifest, a commit are all fine places for it, and that is the
 	// point. Whoever enrols a credential does not thereby become able to read
 	// one.
@@ -64,9 +65,9 @@ type Config struct {
 	IAM string
 
 	// ClientID names this service's machine identity on the HTTP transport. It
-	// is an identifier, not a secret; the matching secret is sealed to the TPM
-	// and never appears here, in the environment, or in a file this process can
-	// be asked to print.
+	// is an identifier, not a secret; the matching secret is held as a
+	// host-encrypted unit credential and never appears here, in the environment,
+	// or in a file this process can be asked to print.
 	ClientID string
 
 	// RPM is how many calls one principal may make per minute.
