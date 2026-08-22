@@ -13,46 +13,51 @@ outside the blast radius of a DO API token; renting it from DO puts it back
 inside. There is also nothing to ask DO for — it sells no confidential compute —
 so the choice is not between providers, it is between borrowed hardware and ours.
 
-**The passphrase does not exist.** The LUKS root is sealed to the machine's TPM
-under a PCR policy, so the disk unlocks only on this board, only under the boot
-chain we signed. Nobody types anything, nobody knows a passphrase, and a reboot
-is unattended — which matters because a host that needs a human to come back is a
-host somebody keeps a passphrase for.
+**The disk is encrypted, all of it.** LUKS2 on the root, so a stolen disk, a
+returned drive or a machine carried out of the rack is ciphertext. There is no
+partition that escapes it: every path this service reads or writes — the
+credential files, the systemd host key, the journal — is inside it.
 
 ```
-# root, sealed to firmware + secure boot + the signed kernel image
-systemd-cryptenroll --tpm2-device=auto --tpm2-pcrs=7+11 /dev/<root>
+cryptsetup luksFormat --type luks2 /dev/<root>
 ```
+
+The passphrase is typed at boot and nowhere else. It is not on the box, not in
+KMS, not in a repo, and a reboot is therefore attended — that is the cost of
+having no TPM to hold it, and it is a real one: a host that needs a human to come
+back is a host somebody keeps a passphrase for. Keep it where a passphrase for a
+safe would go, and say who holds it.
 
 **A provider key is encrypted to this box before it is stored anywhere.** The
-TPM holds a key that cannot be exported — not by us, not by root, not with the
-disk in another machine. Every credential is sealed to it and only then written
-to KMS, so what KMS holds is ciphertext that KMS itself cannot open. That answers
-the question the store model could not: a KMS administrator reading every row
-learns nothing.
+identity that opens them is held as a systemd credential bound to this host's
+own key (`/var/lib/systemd/credential.secret`), which lives on the LUKS root —
+so it is ciphertext at rest twice over, and a disk read without the passphrase
+yields neither. Every provider credential is sealed to that identity and only
+then written to KMS, so what KMS holds is ciphertext that KMS itself cannot open.
+That answers the question the store model could not: a KMS administrator reading
+every row learns nothing.
 
 ```
-# the identity, sealed once on the host — the plaintext never lands on disk
-systemd-creds encrypt --with-key=tpm2 --name=mnemonic - /etc/egress/mnemonic.cred
+# the identity, encrypted once on the host — the plaintext never lands on disk
+egress mint | systemd-creds encrypt --with-key=host --name=identity - /etc/egress/identity.cred
 # the unit receives it decrypted into its own credential directory, memory only
-LoadCredentialEncrypted=mnemonic:/etc/egress/mnemonic.cred
+LoadCredentialEncrypted=identity:/etc/egress/identity.cred
 ```
 
-**The identity is sealed even where the root is not.** `systemd-creds` binds to
-the TPM independently of LUKS, so a host that has not yet been rebuilt with an
-encrypted root still keeps its innermost secret as ciphertext at rest. That
-matters because the mnemonic derives the key that unlocks every provider
-credential: it used to sit in `/etc/egress/env` as plaintext AND in this
-process's environment, where `/proc/<pid>/environ` hands it to anything running
-as root. Invariant 3 forbids exactly that, and the identity was the one
-credential exempting itself from the rule it exists to enforce. There is no
-environment fallback — one way to hold it, or the service does not start.
+**No credential is ever plaintext on disk or in the environment.** The mnemonic
+derives the key that unlocks every provider credential, and it used to sit in
+`/etc/egress/env` as plaintext AND in this process's environment, where
+`/proc/<pid>/environ` hands it to anything running as root. Invariant 3 forbids
+exactly that, and the identity was the one credential exempting itself from the
+rule it exists to enforce. There is no environment fallback — one way to hold it,
+or the service does not start.
 
-**The policy binds the code, not the operator.** PCR 11 measures the unified
-kernel image, so a changed binary, an added debug route or an attached debugger
-produces a different measurement and the TPM simply declines to unseal. Nothing
-here rests on trusting whoever holds the machine — it rests on the build being
-the one that was reviewed.
+**A provider API key is not a way in.** Whoever holds one can spend at that
+vendor; they cannot reach this host. It is not a resource of any cloud we buy an
+API key from, so there is no console to open, no root password to reset, no
+snapshot of its disk to take, and no rescue mode to boot it into. That is the
+property the whole design rests on, and it is the reason this box is not rented
+from the provider whose keys it holds.
 
 Consequently the box is an appliance: no SSH, no shell, no console login, and
 nothing is repaired in place. CI signs an image, the host verifies the signature
@@ -69,8 +74,16 @@ systemctl daemon-reload && systemctl enable --now egress
 
 ### What this does not do
 
-**A running host has the key in memory.** The TPM seals storage; it does not
-encrypt RAM. Root on a live box, a DMA-capable port, or a cold-boot attack still
+**Nothing measures the code.** With no TPM there is no PCR policy, so the disk
+does not refuse to unlock for a changed binary, an added debug route or an
+attached debugger. What protects the build is that the box is an appliance —
+signed image, no shell, replaced rather than repaired — and that rests on
+trusting whoever holds the machine and the passphrase, which a measured boot
+would not. This is the property given up by dropping the TPM, and it is worth
+naming rather than discovering.
+
+**A running host has the key in memory.** Encryption at rest is storage; it does
+not encrypt RAM. Root on a live box, a DMA-capable port, or a cold-boot attack still
 reaches the plaintext. Only encrypted memory closes that — SEV-SNP on AMD EPYC or
 TDX on Xeon, neither of which is a consumer part and neither of which any cloud
 we use offers. It is one machine to buy, not an architecture to change: the
@@ -91,10 +104,11 @@ Every provider credential in KMS is sealed to this host. Mint the pair on the
 host, and let the pipe put each half where it belongs:
 
 ```
-egress mint | systemd-creds encrypt --with-key=tpm2 --name=identity - /etc/egress/identity.cred
+egress mint | systemd-creds encrypt --with-key=host --name=identity - /etc/egress/identity.cred
 ```
 
-The secret half goes down the pipe into the TPM and never exists as a file. The
+The secret half goes down the pipe into the encrypted credential and never
+exists as a plaintext file. The
 public half prints on stderr as `EGRESS_RECIPIENT=age1pq1…` — read it off the
 screen and put it in `/etc/egress/env`. It is public by construction: anything
 holding it can seal a credential and open none, which is exactly why the cluster

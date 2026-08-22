@@ -9,7 +9,8 @@ package egress
 // them is a break-in.
 //
 // So the value KMS keeps is not the credential. It is the credential sealed to
-// THIS SERVICE, under a key that exists only here, in a TPM, on one machine.
+// THIS SERVICE, under a key that exists only here, on one machine, encrypted at
+// rest and decrypted only into this process's memory.
 // KMS stores it, replicates it, backs it up, decides who may ask for it — and
 // cannot read a byte of it. The store's operator and the store's contents stop
 // being the same authority.
@@ -40,7 +41,7 @@ import (
 type envelope struct {
 	in       Secrets
 	to       string // the recipient. Public: it seals and cannot open.
-	identity string // this host's identity. It opens, and lives only in the TPM.
+	identity string // this host's identity. It opens, and lives only here, in memory.
 }
 
 // sealEnv is the environment component of a sealed credential's coordinate.

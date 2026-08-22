@@ -16,27 +16,28 @@ RestartSec=2s
 # audience still describe where this process spends.
 EnvironmentFile=/etc/egress/env
 
-# THE IDENTITY, DECRYPTED BY THE TPM INTO MEMORY AND NOWHERE ELSE.
+# THE IDENTITY, DECRYPTED INTO MEMORY AND NOWHERE ELSE.
 #
-# systemd unseals this and places it in %d, a per-service directory that is
+# systemd decrypts this and places it in %d, a per-service directory that is
 # memory-backed and readable only by this unit. So it is ciphertext on disk,
 # plaintext only inside this process, and absent from the environment — where
 # /proc/<pid>/environ would otherwise hand it to anything running as root.
 #
-# It does not depend on an encrypted root, which is why it holds on a host
-# without one. Seal it with:
-#   systemd-creds encrypt --with-key=tpm2 --name=mnemonic - /etc/egress/mnemonic.cred
+# --with-key=host binds it to /var/lib/systemd/credential.secret, which lives on
+# the LUKS root: ciphertext at rest twice over, and a disk read without the
+# passphrase yields neither. Encrypt it with:
+#   systemd-creds encrypt --with-key=host --name=mnemonic - /etc/egress/mnemonic.cred
 LoadCredentialEncrypted=mnemonic:/etc/egress/mnemonic.cred
-# The http transport's secret, sealed the same way. Only the one the endpoint
+# The http transport's secret, encrypted the same way. Only the one the endpoint
 # selects is read, and a missing one is a refusal rather than a fallback.
 LoadCredentialEncrypted=client-secret:/etc/egress/client-secret.cred
 # THE KEY THAT OPENS EVERY PROVIDER CREDENTIAL. Its public half, EGRESS_RECIPIENT
 # in the environment file, seals them, and lives openly wherever it likes —
 # nobody who holds it can read anything. This half is why: it exists on this
-# machine, sealed to this machine's TPM, and every credential in KMS is
-# ciphertext to everyone who does not have it. Mint the pair once, keep this
-# half here and nowhere else:
-#   systemd-creds encrypt --with-key=tpm2 --name=identity - /etc/egress/identity.cred
+# machine, encrypted to this machine, and every credential in KMS is ciphertext
+# to everyone who does not have it. Mint the pair once, keep this half here and
+# nowhere else:
+#   systemd-creds encrypt --with-key=host --name=identity - /etc/egress/identity.cred
 LoadCredentialEncrypted=identity:/etc/egress/identity.cred
 
 User=egress
