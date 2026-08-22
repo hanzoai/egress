@@ -13,6 +13,10 @@ ai / any caller  ──asks for a call──▶  egress  ──holds the key─�
                  ◀──── response ─────         (KMS custody)
 ```
 
+**Using it:** [docs/using-egress.md](docs/using-egress.md) — calling it, minting
+the caller token, every instance option, and what one instance guarantees.
+**Running it:** [deploy/README.md](deploy/README.md).
+
 ## What it changes
 
 A stolen caller credential buys metered calls through our own meter — rate
