@@ -10,7 +10,7 @@ require (
 	github.com/luxfi/kms v1.12.20
 	github.com/valyala/fasthttp v1.72.0
 	github.com/zap-proto/http v0.3.5
-	github.com/zap-proto/zip v1.34.1
+	github.com/zap-proto/zip v1.34.2
 )
 
 require (
