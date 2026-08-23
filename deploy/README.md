@@ -134,7 +134,7 @@ one to this host's recipient, which it cannot do — but it can still replay a
 genuine sealed record it captured. Forgery is closed; replay is not.
 
 **Egress can always spend.** Custody stops a key being taken; it does not stop
-the door being used. That is what the meter, the per-principal quota and the
+egress being used. That is what the meter, the per-principal quota and the
 vendor-side cap are for, and they remain load-bearing rather than decorative.
 
 ## The sealing pair — mint before anything else

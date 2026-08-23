@@ -75,7 +75,7 @@ calls, no KMS and no egress. That path stays exactly as it is.
 A customer bringing their own provider key is the sharper case: it is their
 money, their vendor relationship and our liability. It must be **more** guarded
 than our own keys, not less, and it must reach the upstream through this same
-door — a BYOK path that bypasses egress to call directly would be the one place
+path — a BYOK path that bypasses egress to call directly would be the one place
 a customer key is handled worse than a platform key.
 
 The custody rule already exists and egress inherits it rather than inventing a

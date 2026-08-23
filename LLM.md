@@ -41,7 +41,7 @@ answer, not the shape of the trust.
 | typed op | no — a stream has no single output | yes, so it projects into OpenAPI, MCP, the op plane |
 | contract lives in | this package (`call.go`) | `hanzoai/egress/spend` |
 
-They share the door, the ceiling, the custody path, the circuit breaker and
+They share the entry point, the ceiling, the custody path, the circuit breaker and
 `scrub`. That is the point: **custody is orthogonal to shape**, so a second
 thing to spend on cost a request struct and a handler, not a second service.
 
@@ -115,7 +115,7 @@ before anything else.
 `github.com/hanzoai/ai/upstream` is a leaf on `object` and the standard library:
 `Endpoint(provider, path)` answers the address and `Authorize(req, provider)`
 applies the credential and returns nothing. Both lived inside `controllers`,
-which nothing outside can import, and the extraction was made for this door.
+which nothing outside can import, and the extraction was made for egress.
 Import them; do not restate an address or an auth scheme here. The rule that
 keeps the credential in one place now parses `controllers` AND `upstream`, so a
 copy made here would not be caught by it — the first law is the only thing
@@ -187,7 +187,7 @@ Which class a token belongs to is IAM's `type` claim, which it resolves from the
 grant it answered. It is not inferred, because the inference within reach —
 a subject shaped `owner/name` — is what a person's subject ALSO looks like
 whenever the token names the account rather than its id, and filing those people
-under `apps/` is the collision arriving by the front door.
+under `apps/` is precisely that collision.
 
 **The tenant is the `owner` claim and never the subject's first half.** A
 program's subject reads `admin/hanzo-egress`, where `admin` is the org the

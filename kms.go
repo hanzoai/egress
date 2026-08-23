@@ -31,7 +31,7 @@ func Vault(cfg Config) (Secrets, func(), error) {
 	// verifies the envelope. http(s):// exchanges a machine identity for a
 	// bearer at IAM. They are not interchangeable and neither is a fallback for
 	// the other: a missing credential fails here rather than quietly trying the
-	// other door with the wrong one.
+	// other transport with the wrong one.
 	//
 	// This process runs off the cluster, where the ZAP port is not carried by
 	// the public edge — so https is the reachable one from here, and zap:// is

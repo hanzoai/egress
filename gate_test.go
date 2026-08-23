@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// TestTheGateStopsAnAnonymousCallerBeforeTheHandler isolates the door. The
+// TestTheGateStopsAnAnonymousCallerBeforeTheHandler isolates the gate. The
 // route tests observe a 401, which two independent checks can produce; this one
 // asserts the gate itself refuses and, crucially, passes no principal onward —
 // so nothing downstream can read a credential for a caller nobody could name.
