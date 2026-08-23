@@ -111,7 +111,7 @@ func (s *Server) Listen() error { return s.app.Listen(s.cfg.Listen) }
 // App exposes the router so a test can drive it without a socket.
 func (s *Server) App() *zip.App { return s.app }
 
-// gate is the only door. A caller that cannot be identified is refused before
+// gate is the only entry point. A caller that cannot be identified is refused before
 // anything reads a credential, because an unidentifiable caller has no tenant
 // to spend from and nobody to bill.
 func (s *Server) gate(c *zip.Ctx) error {
