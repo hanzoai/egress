@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"hanzo.ai/egress/spend"
+	"github.com/hanzoai/egress/spend"
 	"github.com/hanzoai/jwt"
 )
 

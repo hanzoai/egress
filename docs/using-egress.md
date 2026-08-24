@@ -26,7 +26,7 @@ Every SDK worth using takes an `*http.Client` — `godo.NewClient(c)`,
 is a transport swap, not a rewrite:
 
 ```go
-import "hanzo.ai/egress/spend"
+import "github.com/hanzoai/egress/spend"
 
 hc := spend.Client(spend.Config{
     Network:  "tcp",                  // or "unix"

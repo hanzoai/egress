@@ -3,7 +3,7 @@
 // the provider dialects and the key library into a process whose whole point is
 // that it holds no key — and, measured on visor, an unrelated authz upgrade
 // that broke its build.
-module hanzo.ai/egress/spend
+module github.com/hanzoai/egress/spend
 
 go 1.26.5
 
