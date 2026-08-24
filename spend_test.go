@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hanzoai/egress/spend"
+	"hanzo.ai/egress/spend"
 )
 
 // listening puts the real server on a real ZAP listener, which is how a caller

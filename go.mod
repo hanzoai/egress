@@ -1,4 +1,4 @@
-module github.com/hanzoai/egress
+module hanzo.ai/egress
 
 go 1.26.5
 
@@ -72,7 +72,7 @@ require (
 	github.com/grandcat/zeroconf v1.0.0 // indirect
 	github.com/hanzoai/account v0.3.3 // indirect
 	github.com/hanzoai/dashscopego v0.6.0 // indirect
-	github.com/hanzoai/egress/spend v0.1.0
+	hanzo.ai/egress/spend v0.1.0
 	github.com/hanzoai/go-openai v1.41.0 // indirect
 	github.com/hanzoai/go-openrouter v1.0.0 // indirect
 	github.com/hanzos3/crc64nvme v1.1.2 // indirect
@@ -167,4 +167,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/hanzoai/egress/spend => ./spend
+replace hanzo.ai/egress/spend => ./spend
