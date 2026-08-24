@@ -248,7 +248,7 @@ credential cannot be taken, but a substitute can be offered. See §9 of
 
 ## The module must resolve on GitHub
 
-`hanzo.ai/egress` is mirrored public on GitHub, and that is load-bearing
+`github.com/hanzoai/egress` is mirrored public on GitHub, and that is load-bearing
 rather than decorative: it is how every consumer's CI fetches `spend`.
 
 A build container has no `insteadOf` rewrite. A developer machine usually does —
@@ -266,7 +266,7 @@ breaking every consumer.
 
 Verify a version really resolves the way CI will — clean HOME, no rewrite:
 
-    HOME=$(mktemp -d) GOPATH=$(mktemp -d) go get hanzo.ai/egress/spend@vX.Y.Z
+    HOME=$(mktemp -d) GOPATH=$(mktemp -d) go get github.com/hanzoai/egress/spend@vX.Y.Z
 
 The nine hanzoai modules visor already imports are all public on GitHub for the
 same reason. `hanzoai/kms` is the exception, and it is why egress's own release

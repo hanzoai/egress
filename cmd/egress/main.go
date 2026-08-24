@@ -12,7 +12,7 @@ import (
 	"log/slog"
 	"os"
 
-	"hanzo.ai/egress"
+	"github.com/hanzoai/egress"
 	kms "github.com/luxfi/kms/pkg/store"
 )
 

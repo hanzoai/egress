@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"hanzo.ai/egress/spend"
+	"github.com/hanzoai/egress/spend"
 	"github.com/zap-proto/zip"
 	"strings"
 	"time"
