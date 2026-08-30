@@ -4,12 +4,16 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/hanzoai/ai/proxy"
+	iconfig "github.com/hanzoai/egress/internal/config"
+	"github.com/hanzoai/egress/internal/containment"
+	"github.com/hanzoai/egress/internal/transform/secrets"
 	"github.com/zap-proto/zip"
 	"github.com/zap-proto/zip/middleware"
 )
@@ -27,6 +31,7 @@ type Server struct {
 	fetcher  *http.Client
 	log      *slog.Logger
 	app      *zip.App
+	firewall *containment.Runner
 }
 
 // New builds the service over a credential store. It refuses an incoherent
@@ -102,11 +107,42 @@ func New(cfg Config, store Secrets, log *slog.Logger) (*Server, error) {
 	zip.Get(s.app, "/v1/health", s.health,
 		zip.WithOperationID("egress_health"),
 		zip.WithSummary("Report whether this replica is serving"))
+
+	// The firewall is opt-in: with no containment config, egress is exactly the
+	// spend service it was. With one, the same binary also runs the outbound
+	// network firewall, and its credential transforms read secrets from the same
+	// KMS custody the spend side uses — MPC-sharded, held for one request, never
+	// returned. A firewall whose config will not load refuses to start rather
+	// than serving with a hole in it.
+	if cfg.ContainmentPath != "" {
+		fc, err := iconfig.LoadConfig(cfg.ContainmentPath)
+		if err != nil {
+			return nil, fmt.Errorf("egress: loading containment config: %w", err)
+		}
+		secrets.SetKMSFetcher(func(ctx context.Context, ref string) (string, error) {
+			b, err := store.GetSecret(ctx, ref)
+			return string(b), err
+		})
+		s.firewall, err = containment.New(fc, log)
+		if err != nil {
+			return nil, fmt.Errorf("egress: building firewall: %w", err)
+		}
+		log.Info("network containment enabled", "config", cfg.ContainmentPath)
+	}
 	return s, nil
 }
 
-// Listen serves until shutdown.
-func (s *Server) Listen() error { return s.app.Listen(s.cfg.Listen) }
+// Listen serves the spend API and, when configured, the network firewall, until
+// either stops. One binary, both boundaries.
+func (s *Server) Listen() error {
+	if s.firewall == nil {
+		return s.app.Listen(s.cfg.Listen)
+	}
+	errc := make(chan error, 2)
+	go func() { errc <- s.app.Listen(s.cfg.Listen) }()
+	go func() { errc <- s.firewall.Run(context.Background()) }()
+	return <-errc
+}
 
 // App exposes the router so a test can drive it without a socket.
 func (s *Server) App() *zip.App { return s.app }

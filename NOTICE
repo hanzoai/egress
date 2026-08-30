@@ -1,0 +1,15 @@
+Hanzo Egress
+Copyright 2026 Hanzo Industries Inc.
+
+This product includes software developed at Iron (github.com/ironsh/iron-proxy),
+licensed under the Apache License, Version 2.0.
+
+The outbound network-containment path in egress — the transparent forward proxy,
+host allowlist, connect-time CIDR deny, DNS interception and rebinding guard,
+TLS MITM / SNI passthrough, the credential-transform pipeline (AWS SigV4, HMAC,
+OAuth2, GCP tokens), header allowlist, MCP interception and response retry — is
+derived from iron-proxy. It lives under internal/ and gen/, with the module path
+rewritten to github.com/hanzoai/egress and its control, secret and audit surfaces
+replaced by Hanzo IAM, Hanzo KMS and the Hanzo event bus.
+
+A copy of the Apache License 2.0 is in LICENSE.

@@ -89,6 +89,12 @@ type Config struct {
 	// that, which is why it is not required.
 	URLs map[string]string
 
+	// ContainmentPath points at the network-containment config — the firewall
+	// half of egress (host allowlist, connect-time CIDR deny, credential
+	// transforms, DNS, MITM). Empty means egress runs spend-only, exactly as
+	// before, so turning the firewall on is opt-in and reversible.
+	ContainmentPath string
+
 	// unreadable holds EGRESS_URLS entries that are not provider=url. A typo
 	// there would otherwise be silent, and its symptom — "no upstream is
 	// configured for this provider" at call time — points at the operator who
@@ -124,6 +130,7 @@ func (c *Config) Flags(fs *flag.FlagSet) {
 		}
 	}
 	fs.Var(urls{&c.URLs}, "url", "upstream base URL for one provider, provider=url (repeatable)")
+	fs.StringVar(&c.ContainmentPath, "containment-config", env("EGRESS_CONTAINMENT_CONFIG", ""), "path to the network-containment config; empty = spend-only")
 }
 
 // Check reports why this configuration cannot be served. It refuses rather than
