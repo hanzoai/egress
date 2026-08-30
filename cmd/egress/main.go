@@ -36,10 +36,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The credential store is required to SPEND, not to CONTAIN. A host running
+	// only the firewall has no spend identity and should still serve: fail the
+	// spend side closed with a refusing store rather than refusing to start.
+	var store egress.Secrets
 	store, close, err := egress.Vault(cfg)
 	if err != nil {
-		log.Error("cannot open the credential store", "error", err.Error())
-		os.Exit(1)
+		if cfg.ContainmentPath == "" {
+			log.Error("cannot open the credential store", "error", err.Error())
+			os.Exit(1)
+		}
+		log.Warn("no credential store; serving the firewall only, spend calls will refuse", "error", err.Error())
+		store, close = egress.RefusingStore{}, func() {}
 	}
 	defer close()
 

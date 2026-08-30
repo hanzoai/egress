@@ -143,8 +143,14 @@ func factory(cfg yaml.Node, logger *slog.Logger) (transform.Transformer, error) 
 // transforms can compose the same sources.
 func defaultRegistry(logger *slog.Logger) sourceBuilderRegistry {
 	return sourceBuilderRegistry{
-		"env":  newEnvBuilder(logger),
-		"file": newFileBuilder(logger),
+		"kms":               newKMSBuilder(logger), // Hanzo KMS, MPC-sharded — the native default
+		"env":               newEnvBuilder(logger),
+		"file":              newFileBuilder(logger),
+		"control_plane":     newControlPlaneBuilder(logger),
+		"aws_sm":            newAWSSMBuilder(logger),
+		"aws_ssm":           newAWSSSMBuilder(logger),
+		"1password":         newOPBuilder(logger),
+		"1password_connect": newOPConnectBuilder(logger),
 	}
 }
 
