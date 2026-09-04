@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -70,6 +71,21 @@ type Config struct {
 	// or in a file this process can be asked to print.
 	ClientID string
 
+	// Postgres is where egress listens for database clients: an absolute path
+	// for a unix socket, or a host:port. Empty — the default — means this host
+	// brokers no database sessions at all.
+	//
+	// An absolute path is a socket and anything else is host:port, which is the
+	// rule libpq itself uses, so an operator writes the address their client
+	// already understands. The socket is named the way libpq names one,
+	// `<dir>/.s.PGSQL.<port>`, because that is what a client derives from
+	// `host=<dir>`.
+	//
+	// The caller's token crosses this leg, so it belongs on a socket or on a
+	// link the operator trusts. Egress answers no to a client asking for TLS
+	// here; the encryption that matters on this path is the far end's.
+	Postgres string
+
 	// RPM is how many calls one principal may make per minute.
 	RPM int
 
@@ -110,6 +126,7 @@ func (c *Config) Flags(fs *flag.FlagSet) {
 	fs.StringVar(&c.Recipient, "recipient", env("EGRESS_RECIPIENT", ""), "this host's public sealing key, age1pq1...")
 	fs.StringVar(&c.IAM, "iam", env("EGRESS_IAM", ""), "IAM endpoint for the http transport")
 	fs.StringVar(&c.ClientID, "client-id", env("EGRESS_CLIENT_ID", ""), "machine identity for the http transport")
+	fs.StringVar(&c.Postgres, "postgres", env("EGRESS_POSTGRES", ""), "address to broker postgres sessions on, /path/.s.PGSQL.5432 or host:port")
 	fs.IntVar(&c.RPM, "rpm", envInt("EGRESS_RPM", 600), "calls per minute per principal")
 	fs.DurationVar(&c.Deadline, "deadline", envDuration("EGRESS_DEADLINE", 5*time.Minute), "upstream call deadline")
 	// The environment first, then the flags, so a systemd unit can override an
@@ -149,9 +166,23 @@ func (c *Config) Check() error {
 	if len(c.unreadable) > 0 {
 		return fmt.Errorf("egress: EGRESS_URLS wants provider=url, got %s", strings.Join(c.unreadable, ", "))
 	}
+	// An override moves an upstream egress already carries, so it has to be
+	// spelled the way that upstream is reached: a cloud API answers over https
+	// and a base of ours over the postgres protocol. A scheme that does not
+	// match is an entry that would never be dialled, and finding that out at a
+	// caller's request rather than at boot is the whole reason Check exists.
 	for provider, u := range c.URLs {
-		if !strings.HasPrefix(u, "https://") {
-			return fmt.Errorf("egress: url for %q must be https", provider)
+		want := "https://"
+		if _, ok := bases[provider]; ok {
+			want = "postgres://"
+		}
+		if !strings.HasPrefix(u, want) {
+			return fmt.Errorf("egress: url for %q must be %s", provider, strings.TrimSuffix(want, "://"))
+		}
+	}
+	if c.Postgres != "" && !socket(c.Postgres) {
+		if _, _, err := net.SplitHostPort(c.Postgres); err != nil {
+			return fmt.Errorf("egress: postgres wants an absolute socket path or host:port, got %q", c.Postgres)
 		}
 	}
 	return nil

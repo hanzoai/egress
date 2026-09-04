@@ -38,6 +38,11 @@ const (
 	ScopeUser = "user"
 	// ScopeOrg is the platform key the tenant shares.
 	ScopeOrg = "org"
+	// ScopeTrust is no key at all: a base of ours, reached over the trust
+	// between it and this host. It is a scope because the record has to say
+	// what authorized the spend, and "nothing was read" is an answer worth
+	// having in a line beside the two that name a credential.
+	ScopeTrust = "trust"
 )
 
 // ownRef is where a principal's own key lives. Built from the validated

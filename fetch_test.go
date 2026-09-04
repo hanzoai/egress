@@ -204,14 +204,14 @@ func TestACloudsAddressIsKnownWithoutConfiguration(t *testing.T) {
 		"digitalocean": "https://api.digitalocean.com",
 		"hetzner":      "https://api.hetzner.cloud",
 	} {
-		got, ok := s.upstream(provider)
+		got, ok := s.upstream(clouds, provider)
 		if !ok || got != want {
 			t.Errorf("upstream(%q) = %q, %v; want %q", provider, got, ok, want)
 		}
 	}
 	// And membership is the allowlist: a cloud egress cannot pay for has no
 	// address here either, so there is one table and not two to disagree.
-	if got, ok := s.upstream("aws"); ok {
+	if got, ok := s.upstream(clouds, "aws"); ok {
 		t.Errorf("upstream(\"aws\") = %q — AWS signs its requests and cannot be paid with a header", got)
 	}
 }
@@ -225,10 +225,10 @@ func TestAnOverrideMovesACloudButCannotAdmitOne(t *testing.T) {
 		"digitalocean": "https://api.digitalocean.example",
 		"aws":          "https://ec2.amazonaws.com",
 	}
-	if got, _ := s.upstream("digitalocean"); got != "https://api.digitalocean.example" {
+	if got, _ := s.upstream(clouds, "digitalocean"); got != "https://api.digitalocean.example" {
 		t.Errorf("the override was ignored: %q", got)
 	}
-	if got, ok := s.upstream("aws"); ok {
+	if got, ok := s.upstream(clouds, "aws"); ok {
 		t.Errorf("an override admitted a cloud egress cannot pay for: %q", got)
 	}
 }
