@@ -188,7 +188,18 @@ EGRESS_URLS=digitalocean=https://api.digitalocean.com
 ```
 
 It cannot admit an upstream egress cannot pay for, because an address is not what
-makes one payable. https only; a malformed entry refuses to start.
+makes one payable. A malformed entry refuses to start.
+
+A base of ours moves the same way, and is spelled as an address rather than a
+URL because there is nobody to be in it and nothing to prove — which is the
+whole of what makes it a base of ours. That is also what lets it name a socket,
+which is how a co-located egress reaches `hanzo-sql` with no `pg_hba` change at
+all:
+
+```
+EGRESS_URLS=sql=/var/run/postgresql
+EGRESS_URLS=sql=hanzo-sql.hanzo.svc.cluster.local:5432
+```
 
 ## Cutover, and why the order is load-bearing
 
