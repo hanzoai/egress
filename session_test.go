@@ -66,8 +66,8 @@ func answering(t *testing.T, secret string, identity *tls.Certificate) *far {
 	return f
 }
 
-// at is where this database answers, spelled the way an origin spells one.
-func (f *far) at() string { return "postgres://" + f.addr }
+// at is where this database answers, spelled the way a base of ours is.
+func (f *far) at() string { return f.addr }
 
 func (f *far) saw() ([]map[string]string, []string, bool) {
 	f.mu.Lock()
@@ -140,7 +140,9 @@ func (f *far) hold(raw net.Conn) {
 	f.mu.Unlock()
 
 	if presented != f.secret {
-		refuse(c, "28P01", "password authentication failed for user "+start.Parameters["user"])
+		// Quoting back what it refused, which is the pessimistic case: a real
+		// postgres names the role, and a great many services name the secret.
+		refuse(c, "28P01", "password authentication failed: "+presented)
 		return
 	}
 
@@ -907,4 +909,94 @@ func (f *far) said() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.heard...)
+}
+
+// TestASessionIsNotOpenedForAPrincipalWithNoEnd is the backstop under the
+// deadline, and it is here because the failure it prevents is silent: a zero
+// time passed to SetDeadline CLEARS the deadline, so a principal that somehow
+// lost its expiry would get an OPEN-ENDED session rather than a refused one.
+// The verifier requires an expiry, so this is unreachable today and is exactly
+// the kind of thing that stops being unreachable.
+func TestASessionIsNotOpenedForAPrincipalWithNoEnd(t *testing.T) {
+	one, two := net.Pipe()
+	defer func() { _ = one.Close() }()
+	defer func() { _ = two.Close() }()
+
+	if err := deadline(alice, one, two); err == nil {
+		t.Fatal("a principal with no end was given a session")
+	}
+	ends := alice
+	ends.Until = time.Now().Add(time.Minute)
+	if err := deadline(ends, one, two); err != nil {
+		t.Fatalf("a principal with an end was refused: %v", err)
+	}
+}
+
+// TestAnUpstreamRefusalDoesNotCarryTheCredentialBack. What a database says when
+// it rejects a credential travels through egress on its way to a caller and a
+// log, and services quote back the secret they refused. The caller gets one
+// refusal that says nothing, and the credential is taken out of the record.
+func TestAnUpstreamRefusalDoesNotCarryTheCredentialBack(t *testing.T) {
+	const secret = "pw-Ktm4Zx9QhRv2Ls7Ndb"
+	identity, pool := vouched(t)
+	base := answering(t, "something-else-entirely", &identity)
+	_, port, err := net.SplitHostPort(base.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st := newStore(map[string]string{
+		ownRef(alice, "analytics", "default"): "postgres://reader:" + secret + "@a.database.example:" + port + "/facts",
+	})
+	s, key := serving(t, st, 100)
+	s.roots = pool
+	s.lookup = func(context.Context, string) ([]string, error) { return []string{"127.0.0.1"}, nil }
+
+	to, err := opening(t, brokering(t, s), "analytics", "facts", token(t, key, nil))
+	if err == nil {
+		_ = to.Close(context.Background())
+		t.Fatal("a session opened on a credential the database refused")
+	}
+	for _, piece := range []string{secret, "pw-Ktm4", "Ndb", "reader"} {
+		if strings.Contains(err.Error(), piece) {
+			t.Errorf("a piece of the credential reached the caller: %q is in %q", piece, err)
+		}
+	}
+}
+
+// TestAPostgresAddressIsAPathOrHostPort. An incoherent address is refused while
+// starting, not when the first caller finds nothing listening.
+func TestAPostgresAddressIsAPathOrHostPort(t *testing.T) {
+	sound := func() Config {
+		return Config{
+			Listen: ":0", Issuer: issuer, JWKS: "https://hanzo.id/jwks", Audience: audience,
+			KMS: "zap://kms:9999", KMSOrg: "hanzo", KMSPath: "hanzo/egress", Recipient: aRecipient(),
+			RPM: 1, Deadline: time.Second,
+		}
+	}
+	for _, ok := range []string{"", "/run/hanzo/.s.PGSQL.5432", "127.0.0.1:5432", ":5432"} {
+		cfg := sound()
+		cfg.Postgres = ok
+		if err := cfg.Check(); err != nil {
+			t.Errorf("postgres=%q was refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"run/hanzo/pg.sock", "postgres://x:5432", "5432"} {
+		cfg := sound()
+		cfg.Postgres = bad
+		if err := cfg.Check(); err == nil {
+			t.Errorf("postgres=%q was accepted", bad)
+		}
+	}
+
+	// An override moves a base, and it is spelled the way that base is reached.
+	cfg := sound()
+	cfg.URLs = map[string]string{"sql": "https://hanzo-sql.hanzo.svc.cluster.local"}
+	if err := cfg.Check(); err == nil {
+		t.Error("a base was overridden with an address no database answers on")
+	}
+	cfg.URLs["sql"] = "/var/run/postgresql"
+	if err := cfg.Check(); err != nil {
+		t.Errorf("a base override was refused: %v", err)
+	}
 }

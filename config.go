@@ -167,19 +167,24 @@ func (c *Config) Check() error {
 		return fmt.Errorf("egress: EGRESS_URLS wants provider=url, got %s", strings.Join(c.unreadable, ", "))
 	}
 	// An override moves an upstream egress already carries, so it has to be
-	// spelled the way that upstream is reached: a cloud API answers over https
-	// and a base of ours over the postgres protocol. A scheme that does not
-	// match is an entry that would never be dialled, and finding that out at a
-	// caller's request rather than at boot is the whole reason Check exists.
+	// spelled the way that upstream is reached: a cloud API by an https URL, a
+	// base of ours by an address. An entry that is neither would never be
+	// dialled, and finding that out at a caller's request rather than at boot is
+	// the whole reason Check exists.
 	for provider, u := range c.URLs {
-		want := "https://"
-		if _, ok := bases[provider]; ok {
-			want = "postgres://"
+		if _, ours := bases[provider]; ours {
+			if _, _, err := where(u); err != nil {
+				return fmt.Errorf("egress: url for %q: %w", provider, err)
+			}
+			continue
 		}
-		if !strings.HasPrefix(u, want) {
-			return fmt.Errorf("egress: url for %q must be %s", provider, strings.TrimSuffix(want, "://"))
+		if !strings.HasPrefix(u, "https://") {
+			return fmt.Errorf("egress: url for %q must be https", provider)
 		}
 	}
+	// A listener takes the same grammar an origin does with one difference: the
+	// host may be empty, because ":5432" means every interface. There is no
+	// dialling equivalent of that, which is why `where` refuses it.
 	if c.Postgres != "" && !socket(c.Postgres) {
 		if _, _, err := net.SplitHostPort(c.Postgres); err != nil {
 			return fmt.Errorf("egress: postgres wants an absolute socket path or host:port, got %q", c.Postgres)

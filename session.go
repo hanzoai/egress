@@ -3,11 +3,12 @@ package egress
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -52,11 +53,15 @@ import (
 // else. So a tenant cannot enrol its way onto one of our own bases, and adding
 // the next fork is one line written by whoever stood it up.
 //
-// The value is a URL because the override is, and the two must be the same
-// shape. A socket is spelled the way libpq spells one, with the directory
-// percent-encoded into the host: postgres://%2Fvar%2Frun%2Fpostgresql:5432
+// The value is an ADDRESS and not a connection, which is the mode stated in the
+// data: there is nobody to be and nothing to prove, so there is nowhere in it
+// for a user or a credential to go. It is spelled the way every other address
+// here is — an absolute path is a socket directory, anything else is host:port
+// — so an operator moving a base writes what they would write anywhere else,
+// and a co-located base on a socket is expressible where a URL could not spell
+// one.
 var bases = map[string]string{
-	"sql": "postgres://hanzo-sql.hanzo.svc.cluster.local:5432",
+	"sql": "hanzo-sql.hanzo.svc.cluster.local:5432",
 }
 
 // room is how many sessions one replica will hold at once. A session is a
@@ -90,6 +95,10 @@ func (s *Server) origin(ctx context.Context, p Principal, name string) (string, 
 	if at, ok := s.upstream(bases, base); ok {
 		return at, ScopeTrust, nil
 	}
+	// One coordinate, unlike a cloud, which has a label so that a tenant can
+	// hold two accounts on one vendor. A second credential for one database is
+	// a second database as far as a caller is concerned, so it is a second
+	// name, and there is nothing extra to spell in a connection URL.
 	return s.custody.resolve(ctx, p, base, "default")
 }
 
@@ -109,14 +118,14 @@ type session struct {
 func (s *Server) opened(in session) {
 	s.log.Info("session",
 		"org", in.p.Org, "name", in.p.Name, "kind", in.p.Kind,
-		"base", in.base, "scope", in.scope, "database", in.database)
+		"base", clip(in.base), "scope", in.scope, "database", clip(in.database))
 }
 
 // closed records the spend: how long the session held and how much crossed it.
 func (s *Server) closed(in session, started time.Time, from, to int64) {
 	s.log.Info("spend",
 		"org", in.p.Org, "name", in.p.Name, "kind", in.p.Kind,
-		"base", in.base, "scope", in.scope, "database", in.database,
+		"base", clip(in.base), "scope", in.scope, "database", clip(in.database),
 		"millis", time.Since(started).Milliseconds(), "read", from, "wrote", to)
 }
 
@@ -126,7 +135,7 @@ func (s *Server) closed(in session, started time.Time, from, to int64) {
 func (s *Server) refused(in session, err error) {
 	s.log.Warn("refused",
 		"org", in.p.Org, "name", in.p.Name, "kind", in.p.Kind,
-		"base", in.base, "database", in.database, "error", err.Error())
+		"base", clip(in.base), "database", clip(in.database), "error", err.Error())
 }
 
 // bind opens the listener a protocol serves on. An absolute path is a unix
@@ -141,7 +150,7 @@ func (s *Server) refused(in session, err error) {
 // authorizes a session, and a mode is not, but there is no reason for every
 // account on the host to be able to try.
 func bind(addr string) (net.Listener, error) {
-	if !filepath.IsAbs(addr) {
+	if !socket(addr) {
 		return net.Listen("tcp", addr)
 	}
 	if err := os.Remove(addr); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -207,10 +216,31 @@ func relay(caller, far net.Conn) (from, to int64) {
 // would close nothing that was already open.
 //
 // It is set on both ends, so neither half lingers on after the other is cut.
-func deadline(p Principal, ends ...net.Conn) {
+//
+// A principal with no expiry is refused here rather than given an open-ended
+// connection. The verifier requires one, so this is a backstop — and the right
+// place for it, because passing a zero time to SetDeadline CLEARS the deadline:
+// the failure would be silent, and what it produces is the one thing this
+// function exists to prevent.
+func deadline(p Principal, ends ...net.Conn) error {
+	if p.Until.IsZero() {
+		return errors.New("egress: the token says nothing about when it stops")
+	}
 	for _, c := range ends {
 		_ = c.SetDeadline(p.Until)
 	}
+	return nil
+}
+
+// clip bounds what a caller can write into a record. A base and a database
+// arrive in a startup packet, which is thousands of bytes wide, and a line is
+// worth less the more of it somebody else chose. Everything a record needs is
+// inside a segment's own length.
+func clip(s string) string {
+	if len(s) > 64 {
+		return s[:64] + "…"
+	}
+	return s
 }
 
 // serve starts every listener this host was configured for. A listener that
@@ -240,6 +270,27 @@ func shut(open []net.Listener, log *slog.Logger) {
 }
 
 // socket reports whether an address names a unix socket rather than a host and
-// port. One rule, used by both ends: this host binds by it and a caller's URL
-// is read by it.
+// port. One rule, used everywhere an address is read here: this host binds by
+// it, a base is reached by it, and a sealed origin is refused by it.
 func socket(addr string) bool { return strings.HasPrefix(addr, "/") }
+
+// where splits an address into the two halves a connection needs. It is the
+// rule libpq uses, so an operator writes the address their client already
+// understands and this host's listener and its bases are described alike.
+//
+// A socket directory takes the default port, because the port is only how libpq
+// names the file inside it and every base of ours answers on 5432.
+func where(addr string) (string, uint16, error) {
+	if socket(addr) {
+		return addr, 5432, nil
+	}
+	host, named, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return "", 0, fmt.Errorf("egress: %q is not an absolute socket path or host:port", addr)
+	}
+	port, err := strconv.ParseUint(named, 10, 16)
+	if err != nil || port == 0 {
+		return "", 0, fmt.Errorf("egress: %q names no port", addr)
+	}
+	return host, uint16(port), nil
+}

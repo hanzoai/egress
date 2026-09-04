@@ -76,6 +76,13 @@ var errCancel = errors.New("egress: cancel is not brokered")
 func (s *Server) postgres(c net.Conn) {
 	defer func() { _ = c.Close() }()
 
+	// FIRST, because a refusal is a write and a write to a client that is not
+	// reading blocks. Until the client has identified itself it is nobody's to
+	// bill either, so it does not get to hold a connection open on the strength
+	// of having opened one. Replaced by the token's own expiry once there is
+	// one — see deadline.
+	_ = c.SetDeadline(time.Now().Add(greeting))
+
 	select {
 	case s.room <- struct{}{}:
 		defer func() { <-s.room }()
@@ -83,11 +90,6 @@ func (s *Server) postgres(c net.Conn) {
 		refuse(c, "53300", "too many connections")
 		return
 	}
-
-	// Until the client has identified itself it is nobody's to bill, so it does
-	// not get to hold a connection open on the strength of having opened one.
-	// Replaced by the token's own expiry once there is one — see deadline.
-	_ = c.SetDeadline(time.Now().Add(greeting))
 
 	start, err := hello(c)
 	if err != nil {
@@ -144,10 +146,14 @@ func (s *Server) postgres(c net.Conn) {
 	}
 	defer func() { _ = up.Conn.Close() }()
 
+	if err := deadline(p, c, up.Conn); err != nil {
+		s.refused(in, err)
+		refuse(c, "28000", "not identified")
+		return
+	}
 	if err := greet(c, up); err != nil {
 		return
 	}
-	deadline(p, c, up.Conn)
 
 	s.opened(in)
 	started := time.Now()
@@ -218,38 +224,48 @@ func password(c net.Conn) (string, error) {
 // leaves here — a database quotes back the role it refused, and often enough
 // the password with it.
 func (s *Server) connect(ctx context.Context, at string, in session, asked map[string]string) (*pgconn.HijackedConn, error) {
-	u, err := url.Parse(at)
-	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
-		return nil, errors.New("egress: the origin is not a postgres URL")
-	}
-	host, secret := u.Hostname(), ""
-	port := uint16(5432)
-	if named := u.Port(); named != "" {
-		n, err := strconv.ParseUint(named, 10, 16)
-		if err != nil || n == 0 {
-			return nil, errors.New("egress: the origin names no port")
-		}
-		port = uint16(n)
-	}
+	var host, user, secret string
+	var port uint16
+	database := in.database
 
-	user := u.User.Username()
 	if in.scope == ScopeTrust {
-		// A base of ours carries no user and no credential. What egress
-		// presents instead is the caller's TENANT as the database role, so the
-		// base's own grants are a second boundary under this one rather than
-		// one role standing in for every tenant. A base that then asks for a
-		// password ends the session: there is nothing to answer it with, and
-		// nowhere less guarded to look.
+		// A base of ours is an ADDRESS and not a connection: there is nobody to
+		// be and nothing to prove. So what egress presents is the caller's
+		// TENANT as the database role, and the base's own grants are a second
+		// boundary under this one rather than one role standing in for every
+		// tenant. A base that then asks for a password ends the session: there
+		// is nothing to answer it with, and nowhere less guarded to look.
+		var err error
+		if host, port, err = where(at); err != nil {
+			return nil, err
+		}
 		user = in.p.Org
 	} else {
+		// A database that is not ours is a whole connection URL, because that
+		// is what a tenant holds and what they sealed. Only the parts that say
+		// where and as whom are read: nothing else in it reaches a parser, so a
+		// sealed record cannot ask this process to read a file, follow a
+		// service definition or weaken the transport.
+		u, err := url.Parse(at)
+		if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
+			return nil, errors.New("egress: the origin is not a postgres URL")
+		}
+		host, user = u.Hostname(), u.User.Username()
 		secret, _ = u.User.Password()
+		port = 5432
+		if named := u.Port(); named != "" {
+			n, err := strconv.ParseUint(named, 10, 16)
+			if err != nil || n == 0 {
+				return nil, errors.New("egress: the origin names no port")
+			}
+			port = uint16(n)
+		}
+		if database == "" {
+			database = strings.TrimPrefix(u.Path, "/")
+		}
 	}
 	if user == "" {
 		return nil, errors.New("egress: the origin names nobody to be")
-	}
-	database := in.database
-	if database == "" {
-		database = strings.TrimPrefix(u.Path, "/")
 	}
 
 	// EVERY FIELD THAT DECIDES WHERE THE CREDENTIAL GOES IS WRITTEN HERE.
@@ -281,10 +297,12 @@ func (s *Server) connect(ctx context.Context, at string, in session, asked map[s
 	cfg.TLSConfig = nil
 
 	if in.scope != ScopeTrust {
+		// An origin that is not ours may not name a socket on this host: that
+		// is how a tenant would reach a co-located database as whoever this
+		// process is. A URL cannot spell one today — a host is not a path, and
+		// url.Parse refuses the percent-encoded form libpq accepts — so this
+		// states the property rather than deriving it from that.
 		if socket(host) {
-			// A custody origin is the one place a caller decides an address, so
-			// it may not name a socket on this host: that is how a tenant would
-			// reach a co-located database as whoever this process is.
 			return nil, errors.New("egress: an origin that is not ours must name a host")
 		}
 		cfg.TLSConfig = &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12, RootCAs: s.roots}
@@ -412,6 +430,9 @@ func take(from io.Reader, typed bool, most int) (byte, []byte, error) {
 	body := make([]byte, size-4)
 	if _, err := io.ReadFull(from, body); err != nil {
 		return 0, nil, err
+	}
+	if !typed {
+		return 0, body, nil
 	}
 	return head[0], body, nil
 }
