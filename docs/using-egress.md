@@ -42,6 +42,63 @@ The request's host is discarded: only the method, path, query, headers and body
 travel. Egress decides which upstream that is from `Provider`, because an address
 is not what makes an upstream payable.
 
+## Reaching a database
+
+A database is not a request and an answer — you open a connection and keep it —
+so what egress brokers there is the whole session. The swap is the same shape
+one layer down: your driver is unchanged and the URL comes from the SDK.
+
+```go
+import "github.com/hanzoai/egress/spend"
+
+url := spend.Session(spend.Config{
+    Network:  "unix",                          // or "tcp"
+    Address:  "/run/hanzo/.s.PGSQL.5432",      // what egress bound
+    Token:    token,                           // the same IAM access token
+    Provider: "sql",                           // which base
+    Database: "books",
+    Deadline: 10 * time.Second,
+})
+pool, err := pgxpool.New(ctx, url)
+```
+
+What that builds is an ordinary connection URL, so a service that reads
+`DATABASE_URL` needs no code at all:
+
+```
+postgres://sql:<IAM access token>@/books?host=/run/hanzo&sslmode=disable
+```
+
+**The password field carries your IAM token, not a database password.** A
+postgres client has one field for a secret, so that is the field it travels in,
+and egress verifies it exactly as it verifies a bearer on any other route. Your
+service holds an identity that expires; it never holds a database password.
+
+Two consequences to design for:
+
+- **A session ends when the token does.** That is the property — a connection
+  that outlived its authorization is one nobody re-authorized — so build the URL
+  where your pool opens a connection rather than once at boot. `pgxpool` has
+  `BeforeConnect`; `database/sql` has a connector.
+- **`sslmode=disable` is on the leg to egress and not on the leg to the
+  database.** Egress reaches a database that is not ours over TLS, verified,
+  with no setting that says otherwise. Put the egress socket where only your
+  service can reach it.
+
+`Provider` names the base. `sql` is hanzo-sql and is reached with no credential
+at all — egress connects over the trust between it and the base, and presents
+your **org** as the database role. Any other name is looked up in your own
+custody: enrol the whole connection URL once and egress dials it with the
+credential attached.
+
+```
+POST /v1/enroll  {"provider":"analytics","key":"postgres://reader:…@db.example:5432/facts"}
+```
+
+That URL must name a host on the public internet. A sealed origin naming a
+loopback or private address is refused, because egress would otherwise be a
+tunnel to whatever answers there.
+
 ## Identifying yourself
 
 `Token` is an **IAM access token**, not a credential invented for egress. Egress
@@ -83,6 +140,7 @@ entirely by its unit file. There is no orchestrator to ask.
 | `-recipient` | `EGRESS_RECIPIENT` | — | this host's PUBLIC sealing key, `age1pq1…`. Public by construction — whoever holds it can seal a credential and open none. |
 | `-iam` | `EGRESS_IAM` | — | IAM endpoint, for the https store transport |
 | `-client-id` | `EGRESS_CLIENT_ID` | — | this service's machine identity. An identifier, not a secret. |
+| `-postgres` | `EGRESS_POSTGRES` | — | where database clients connect: `/run/hanzo/.s.PGSQL.5432` or `host:port`. Empty brokers no sessions. The caller's token crosses this leg, so keep it on a socket or a link you trust. |
 | `-rpm` | `EGRESS_RPM` | `600` | calls per minute per principal |
 | `-deadline` | `EGRESS_DEADLINE` | `5m` | one upstream call's bound |
 

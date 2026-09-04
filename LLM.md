@@ -29,21 +29,109 @@ metered call and never hold a key. `ingress` is the inbound twin.
 
 Egress owns exactly one thing: the decision to spend, and the record of it.
 
-## Two shapes, one custody
+## Three shapes, one custody
 
-Egress sells two things, and the difference between them is the shape of the
+Egress sells three things, and the difference between them is the shape of the
 answer, not the shape of the trust.
 
-| | `POST /v1/call` | `POST /v1/fetch` |
-|---|---|---|
-| spends on | a model | a cloud API |
-| answer | a token stream, then a meter | one status and one body |
-| typed op | no — a stream has no single output | yes, so it projects into OpenAPI, MCP, the op plane |
-| contract lives in | this package (`call.go`) | `hanzoai/egress/spend` |
+| | `POST /v1/call` | `POST /v1/fetch` | a session |
+|---|---|---|---|
+| spends on | a model | a cloud API | a database |
+| answer | a token stream, then a meter | one status and one body | a connection, for as long as it lasts |
+| typed op | no — a stream has no single output | yes, so it projects into OpenAPI, MCP, the op plane | no — it is not a request |
+| the caller presents | a bearer header | a bearer header | the same token, in the password field |
+| contract lives in | this package (`call.go`) | `hanzoai/egress/spend` | `spend.Session` — a connection URL |
 
 They share the entry point, the ceiling, the custody path, the circuit breaker and
 `scrub`. That is the point: **custody is orthogonal to shape**, so a second
 thing to spend on cost a request struct and a handler, not a second service.
+
+## A session is the third shape, and the first that is not a message
+
+A call and a fetch are each one request and one answer. A database is neither: a
+caller opens a connection, keeps it, and speaks a protocol on it, so what egress
+brokers is the whole connection. `session.go` holds what does not depend on
+which protocol that is; `postgres.go` holds the handshake, and the next fork's
+file holds only its own.
+
+**The caller's token arrives as the postgres password.** A postgres client has
+one field for a secret, so that is the field an IAM access token travels in, and
+the same `Verifier` reads it — same issuer, same audience, same required expiry,
+same refusal carrying no detail. A service's `DATABASE_URL` therefore holds an
+identity that expires rather than a database password that does not. Egress
+terminates the client's authentication and performs the far end's itself; the
+token never leaves this process and the credential never reaches the caller.
+
+**TWO ORIGINS, ONE VERIFIER.** It does not vary. What varies is where the
+connection then goes, and that is one lookup:
+
+- **a base of ours carries NO CREDENTIAL.** hanzo-sql and the five forks beside
+  it are ours and co-located, so egress reaches one over the trust between them
+  and presents the caller's TENANT as the database role. A password between two
+  of our own processes is a secret invented to guard a boundary that is already
+  closed, and an invented secret is one more thing to rotate, leak and audit.
+  `bases` states where each answers, the same shape as `clouds` and for the same
+  reason; adding a fork is one line.
+- **a database that is not ours comes out of the caller's own custody** — the
+  whole connection URL, sealed at the path the validated principal owns, read on
+  the way past and held for one dial. Not a second custody path: the same
+  `custody.resolve` the model and cloud paths use, with a URL where a bearer
+  would be.
+
+The record says which: `scope` is `trust`, `user` or `org`, so a log line
+distinguishes "nothing was read" from "the customer's key" from "ours".
+
+**The role a base is told is the TENANT, and that is a provisioning contract.**
+Egress carries the identity it verified rather than one role standing in for
+everyone, so the base's own `GRANT`s are a second boundary under egress's first.
+It costs the base a role per tenant. A base without one refuses the connection,
+which is the right failure: it is visible, and it is the base saying it does not
+know who that is.
+
+**Custody mode is the one place a caller decides an address**, because the URL
+is the tenant's and they sealed it. Left alone that is a tunnel out of this
+host — to its loopback, to the network it sits on, to a metadata service — so a
+custody origin resolves through `reachable`, which returns only public
+addresses, and refuses a socket path before it resolves anything. Resolving once
+and dialling only what passed is also what closes DNS rebinding. A base of ours
+does not go through it: it is on our own network by definition.
+
+**Nothing about a session comes from the environment.** pgconn's parser fills an
+absent setting from `PG*` variables and from `~/.pgpass`, and this process's
+environment is exactly where a credential must not be found — invariant 7, on a
+new path. So the parse supplies the library's own private defaults and every
+field that decides where the connection goes is written over the top: host,
+port, user, password, database, TLS, the fallback list, the resolver.
+
+**A session cannot outlive the token that opened it.** `Principal.Until` carries
+the token's expiry and becomes a deadline on both ends of the relay. Without it,
+revoking an identity closes nothing already connected and a session opened this
+morning still spends tonight. It is the one field on `Principal` that is not
+part of the identity, which is why nothing comparing two principals reads it.
+
+**pgproto3 is a codec here and never a reader.** Its own reader fills a buffer
+that may reach past the message it was asked for, and after the handshake every
+byte read here is a byte the far end never sees — a client whose first statement
+vanishes, failing in a way that points anywhere but at the broker. So the frames
+are read exactly (`take`) and pgproto3 decodes and encodes them. A test
+pipelines a statement behind the password to prove it.
+
+**Two things a session deliberately does not do.** It does not follow a
+`CancelRequest`: honouring one means keeping a table of live sessions keyed on a
+value an unidentified caller supplies, and dialling that session's origin again
+— which for a database that is not ours means keeping its credential for the
+length of the session. Closing the connection still stops the query. And it does
+not encrypt the leg from the caller: that leg is a unix socket or a link the
+operator trusts, egress answers `N` to a client asking, and a client that will
+not have that finds out at the handshake rather than by believing otherwise.
+
+**`hanzo-sql` needs a `pg_hba` line before native mode reaches it over TCP.**
+The image is stock `postgres:18-bookworm` with the upstream entrypoint, so its
+effective rules are `local all all trust` and `host all all all scram-sha-256`.
+Reached over its unix socket by a co-located egress it works as it stands; over
+the cluster network it will ask for SCRAM and egress has nothing to answer with,
+by design. The change is on that side — a `trust` or `cert` rule for the egress
+host — and it belongs there rather than being worked around here.
 
 **What a caller may say is the whole design of `Fetch`.** No org and no user —
 those come from the token. No host — egress decides that. No headers — a caller
