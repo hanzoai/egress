@@ -53,7 +53,21 @@ type Principal struct {
 	// up and taken by somebody else, and a custody path keyed on one would hand
 	// that somebody the previous holder's credentials.
 	Name string
+	// Until is when the authorization that produced this principal stops being
+	// good — the token's own expiry, which the verifier requires.
+	//
+	// A call is over in seconds and never reaches this. A brokered session is
+	// not: it is held open, and without an end it outlives the token that
+	// opened it, so revoking an identity would close nothing that was already
+	// connected. It is not part of the identity, which is why nothing that
+	// compares two principals should read it; it is how long this one was
+	// vouched for.
+	Until time.Time
 }
+
+// who names one principal for a ceiling: the three fields that distinguish it,
+// and nothing a caller writes.
+func (p Principal) who() string { return p.Org + "/" + p.Kind + "/" + p.Name }
 
 // The two custody namespaces. They are constants rather than anything derived
 // because a namespace a token could name is not a boundary.
@@ -132,6 +146,9 @@ func (v *Verifier) Verify(ctx context.Context, authorization string) (Principal,
 // namespace where an application's name is what addresses a credential.
 func identify(c *jwt.Claims) (Principal, error) {
 	p := Principal{Kind: Persons}
+	if c.ExpiresAt != nil {
+		p.Until = c.ExpiresAt.Time
+	}
 	if c.User != nil {
 		p.Org = c.Owner
 		// The subject, or the `id` spelling of it from an issuer that mints

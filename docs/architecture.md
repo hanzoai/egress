@@ -178,6 +178,46 @@ out** — not for the customer who supplied it, not for an operator, not for a
 support tool. A credential that can be read back leaks through whichever surface
 reads it.
 
+### The session
+
+A database is not a request and an answer, so it is not a route. Egress listens
+for postgres clients on `-postgres` — a unix socket, or a host:port on a link
+the operator trusts — and brokers the whole connection.
+
+The caller's IAM access token arrives **in the password field**, which is the
+only field a postgres client has for a secret, and is verified by the same
+`Verifier` on the same issuer, audience and expiry. Egress terminates the
+client's authentication and performs the far end's itself; nothing is passed
+between the two conversations.
+
+Where the connection goes is one lookup, and it is the only thing the two modes
+differ by:
+
+| | a base of ours | a database that is not ours |
+|---|---|---|
+| example | `hanzo-sql` | a tenant's own postgres |
+| address from | the `bases` table | the sealed origin |
+| credential | **none** | the sealed origin's own |
+| upstream role | the caller's **org** | the origin's own user |
+| transport | the network this host shares with it | TLS, verified, no fallback |
+| `scope` in the record | `trust` | `user` or `org` |
+
+Two properties this path owes that a call does not:
+
+- **A session cannot outlive the token that opened it.** The token's expiry
+  becomes a deadline on both ends of the relay. Otherwise revoking an identity
+  closes nothing already connected.
+- **A sealed origin cannot name this host.** Custody mode is the first place a
+  caller decides an address, so the origin resolves through a lookup that
+  returns public addresses only — and refuses a socket path outright. Without
+  it, enrolling `postgres://…@169.254.169.254` makes the broker a tunnel to
+  whatever answers on this host's own network.
+
+`hanzo-sql` reached over its unix socket by a co-located egress works against
+the image as it stands (`local all all trust`). Over the cluster network it
+answers `scram-sha-256` and egress has nothing to answer with, by design; the
+`pg_hba` rule for the egress host belongs on that side.
+
 ---
 
 ## 4. Identity and the tenant boundary
@@ -371,6 +411,9 @@ through our meter, cannot take the credential) · **Low** · **None**.
 | 14 | An entitled-looking caller burning spend | **Total** (no limit) | **Bounded** | Rate limit per principal, meter per call, attribution in every log line. Entitlement itself is not checked — §5. |
 | 15 | On-path adversary on the leg to the store | **Total** — an enrolled key crosses the network as it is written and again on every read | **None for disclosure** | Bodies are sealed under an X25519 + ML-KEM-768 session, and each request names that session and is honoured only there. Agreeing keys with both sides no longer helps: a request written for one channel cannot be re-signed for another. What remains is that egress cannot yet tell the real store from something that answers in its place — §9. |
 | 16 | On-path adversary on the leg to a provider | **Total** if certificates go unverified, or if the route can be chosen | **None** | The outbound client belongs to this process. It verifies certificates with no setting that disables it, and its transport reads no proxy from the environment, so the far end is the upstream in the config and nothing else. An acceptance test points a call at a server presenting an unvouched certificate and asserts nothing was sent. |
+| 17 | A sealed origin aimed at this host's own network | n/a (new with sessions) | **None** | A tenant's database URL is the first address a caller decides. It resolves through a lookup that returns public addresses only — loopback, private, link-local, carrier-grade and the metadata address are refused — and a socket path is refused before anything resolves. Dialling only what the lookup returned closes rebinding too. A base of ours does not go through it: its address is in `bases`, not on the wire. |
+| 18 | A session outliving the authorization that opened it | n/a (new with sessions) | **Bounded by the token** | The token's expiry is a deadline on both ends of the relay, so a revoked or expired identity ends every connection it opened rather than only the next one. |
+| 19 | The caller's token on the leg to egress | n/a (new with sessions) | **Deployment** | A postgres client's password field is not encrypted by egress: it answers `N` to a client asking for TLS. The listener belongs on a unix socket or a link the operator trusts, and the token it carries is short-lived, audience-bound and buys only what egress will spend for it. |
 
 Net: the design converts *credential theft* into *bounded, observable,
 tenant-scoped spend*. It does not make the credential unreachable to an adversary
