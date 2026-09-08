@@ -1,5 +1,6 @@
-// Package spend is the contract for asking egress to spend a cloud credential,
-// and the client that asks.
+// Package spend is the contract for asking egress to spend on a caller's
+// behalf, and the client that asks: [Client] for a cloud API, [Session] for a
+// database.
 //
 // It is separate from the service for one reason: a caller should link the
 // contract, not the custody. Importing the egress package to reach these two
@@ -69,9 +70,13 @@ type Config struct {
 	// Token identifies the CALLER — this service, to egress. It is not a cloud
 	// credential and buys nothing upstream on its own.
 	Token string
-	// Provider and Account name the cloud account to spend on.
+	// Provider and Account name the cloud account to spend on. For a session,
+	// Provider names the base instead and Account is unused: a base is one
+	// coordinate, and a second credential for one is a second name.
 	Provider string
 	Account  string
+	// Database is the database within a base, for Session. Unused by Fetch.
+	Database string
 	// Deadline bounds one call. Zero means a minute, which is long for a cloud
 	// API and short enough that a stuck call surfaces.
 	Deadline time.Duration

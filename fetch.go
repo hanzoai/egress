@@ -39,19 +39,23 @@ var clouds = map[string]string{
 // ErrNotCarried is what a cloud egress cannot pay for gets.
 var ErrNotCarried = errors.New("egress: credential cannot be carried for this provider")
 
-// upstream is where a cloud's API answers: what egress knows, unless this host
-// overrode it. An override serves a regional or sovereign endpoint, and a test
-// pointing at a server of its own; it can only move a cloud egress already
-// carries, never admit one it cannot pay for.
-func (s *Server) upstream(provider string) (string, bool) {
-	api, ok := clouds[provider]
+// upstream is where one of the upstreams egress carries answers: what egress
+// knows, unless this host overrode it. An override serves a regional or
+// sovereign endpoint, and a test pointing at a server of its own; it can only
+// move an upstream egress already carries, never admit one it cannot pay for.
+//
+// The table is a parameter because there are two — `clouds` for an API egress
+// spends a bearer at, `bases` for a data service that is ours — and the rule
+// about overrides is one rule, not one per table.
+func (s *Server) upstream(known map[string]string, name string) (string, bool) {
+	at, ok := known[name]
 	if !ok {
 		return "", false
 	}
-	if override := s.cfg.URLs[provider]; override != "" {
+	if override := s.cfg.URLs[name]; override != "" {
 		return override, true
 	}
-	return api, true
+	return at, true
 }
 
 // verbs are the methods a cloud call may use. CONNECT and TRACE are absent
@@ -91,7 +95,7 @@ func (s *Server) fetch(ctx context.Context, in *spend.Fetch) (*spend.Fetched, er
 	if !verbs[method] {
 		return nil, zip.ErrBadRequest("method is not one a cloud API uses")
 	}
-	api, ok := s.upstream(provider)
+	api, ok := s.upstream(clouds, provider)
 	if !ok {
 		return nil, zip.ErrBadRequest(ErrNotCarried.Error())
 	}

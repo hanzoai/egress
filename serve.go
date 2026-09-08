@@ -3,6 +3,7 @@ package egress
 import (
 	"bufio"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -27,6 +28,19 @@ type Server struct {
 	fetcher  *http.Client
 	log      *slog.Logger
 	app      *zip.App
+	// room is how many brokered sessions this replica will hold at once. A
+	// session is a connection at each end and a goroutine between them, and it
+	// lasts as long as the caller keeps it — so unlike a call it needs a
+	// ceiling on how many exist, not only on how fast they arrive.
+	room chan struct{}
+	// lookup resolves the host of a database that is not ours, and returns only
+	// addresses this host would reach over the public internet. It is a field
+	// for the reason the verifier's key fetch is one: a test supplies its own
+	// so that what it exercises is the path and not a resolver.
+	lookup func(context.Context, string) ([]string, error)
+	// roots is what a database that is not ours proves itself against. Nil is
+	// this host's own trust store, which is the only value that ships.
+	roots *x509.CertPool
 }
 
 // New builds the service over a credential store. It refuses an incoherent
@@ -42,6 +56,8 @@ func New(cfg Config, store Secrets, log *slog.Logger) (*Server, error) {
 		limiter:  &limiter{rpm: cfg.RPM, seen: map[string]*window{}},
 		circuits: circuits{by: map[string]*middleware.Breaker{}},
 		log:      log,
+		room:     make(chan struct{}, room),
+		lookup:   reachable,
 	}
 	// The dialects make their provider call through one client hanzoai/ai
 	// keeps as a package variable, and it holds nothing until a process puts
@@ -106,7 +122,19 @@ func New(cfg Config, store Secrets, log *slog.Logger) (*Server, error) {
 }
 
 // Listen serves until shutdown.
-func (s *Server) Listen() error { return s.app.Listen(s.cfg.Listen) }
+//
+// A protocol listener is bound BEFORE the ZAP one, and a bind that fails ends
+// the process. A replica that came up answering calls while every database
+// caller found nothing behind the address it was given is worse than one that
+// did not come up: the first looks healthy.
+func (s *Server) Listen() error {
+	open, err := s.serve()
+	if err != nil {
+		return err
+	}
+	defer shut(open, s.log)
+	return s.app.Listen(s.cfg.Listen)
+}
 
 // App exposes the router so a test can drive it without a socket.
 func (s *Server) App() *zip.App { return s.app }
@@ -131,7 +159,7 @@ func (s *Server) limit(c *zip.Ctx) error {
 	if !ok {
 		return zip.ErrUnauthorized("not identified")
 	}
-	if !s.limiter.admit(p.Org + "/" + p.Kind + "/" + p.Name) {
+	if !s.limiter.admit(p.who()) {
 		return zip.Errorf(http.StatusTooManyRequests, "too many calls")
 	}
 	return c.Next()
