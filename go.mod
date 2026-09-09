@@ -1,6 +1,6 @@
 module github.com/hanzoai/egress
 
-go 1.26.5
+go 1.26.8
 
 require (
 	github.com/hanzoai/ai v1.833.110

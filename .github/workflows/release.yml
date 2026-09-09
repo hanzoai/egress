@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: [hanzo-build-linux-amd64]
+    runs-on: [linux-amd64]
     env:
       GOWORK: off
       # Runners are in-cluster, so reach the forge by Service rather than back
