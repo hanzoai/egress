@@ -5,13 +5,13 @@ go 1.26.8
 require (
 	github.com/hanzoai/ai v1.833.110
 	github.com/hanzoai/jwt v1.0.0
-	github.com/hanzoai/kms/sdk/go v1.1.5
+	github.com/hanzoai/kms/sdk/go v1.1.7
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/luxfi/keys v1.4.2
-	github.com/luxfi/kms v1.12.20
+	github.com/luxfi/kms v1.12.26
 	github.com/valyala/fasthttp v1.72.0
-	github.com/zap-proto/http v0.3.5
-	github.com/zap-proto/zip v1.34.2
+	github.com/zap-proto/http v0.3.9
+	github.com/zap-proto/zip v1.36.48
 )
 
 require (
@@ -146,7 +146,7 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zap-proto/fiber/v3 v3.2.1 // indirect
-	github.com/zap-proto/go v1.3.0 // indirect
+	github.com/zap-proto/go v1.8.3 // indirect
 	github.com/zap-proto/mcp v1.0.5 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.44.0 // indirect
