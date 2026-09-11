@@ -9,7 +9,7 @@ go 1.26.8
 
 require (
 	github.com/valyala/fasthttp v1.71.0
-	github.com/zap-proto/http v0.3.5
+	github.com/zap-proto/http v0.3.9
 )
 
 require (

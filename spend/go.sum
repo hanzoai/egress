@@ -10,5 +10,5 @@ github.com/xyproto/randomstring v1.0.5 h1:YtlWPoRdgMu3NZtP45drfy1GKoojuR7hmRcnhZ
 github.com/xyproto/randomstring v1.0.5/go.mod h1:rgmS5DeNXLivK7YprL0pY+lTuhNQW3iGxZ18UQApw/E=
 github.com/zap-proto/go v1.1.0 h1:DDGhuTBNqkmNax7QV/VvkInJR7hiOcybwUjN3YBt8fg=
 github.com/zap-proto/go v1.1.0/go.mod h1:914SNGTH6Rv3Yu1MweWJBPEN8FZlo5C39QyhaB0C7Q0=
-github.com/zap-proto/http v0.3.5 h1:ezSuUbF05jxFGpfmScBnzIVTeH1ZGhcDSm7d5yL8Byc=
-github.com/zap-proto/http v0.3.5/go.mod h1:UYfGhDDCetgxs65XSev8Lpf65COg5vKQK+cWwZGh4zQ=
+github.com/zap-proto/http v0.3.9 h1:fD/Zx8FAglMokLGg23dq5Ca3744Hm7bqt3bv8gUk4zI=
+github.com/zap-proto/http v0.3.9/go.mod h1:UYfGhDDCetgxs65XSev8Lpf65COg5vKQK+cWwZGh4zQ=
