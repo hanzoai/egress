@@ -101,7 +101,7 @@ func TestTheGateHoldsOverZAP(t *testing.T) {
 
 func waitFor(t *testing.T, addr string) {
 	t.Helper()
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond); err == nil {
 			_ = c.Close()
 			return

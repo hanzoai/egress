@@ -67,14 +67,12 @@ func token(t *testing.T, key jwt.Key, edit func(*jwt.Claims)) string {
 		// No `id`. IAM does not mint one — it states the subject and nothing
 		// else — and a fixture that carries one tests a token the issuer never
 		// sends.
-		User: &jwt.User{Owner: "acme", Name: "alice", Email: "alice@acme.example"},
-		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    issuer,
-			Subject:   "u-7",
-			Audience:  jwt.ClaimStrings{audience},
-			ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(now),
-		},
+		User:      &jwt.User{Owner: "acme", Name: "alice", Email: "alice@acme.example"},
+		Issuer:    issuer,
+		Subject:   "u-7",
+		Audience:  jwt.ClaimStrings{audience},
+		ExpiresAt: jwt.NewNumericDate(now.Add(time.Hour)),
+		IssuedAt:  jwt.NewNumericDate(now),
 	}
 	if edit != nil {
 		edit(claims)

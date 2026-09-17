@@ -132,7 +132,7 @@ func (c *Config) Flags(fs *flag.FlagSet) {
 	// The environment first, then the flags, so a systemd unit can override an
 	// upstream without a command line — which is how this host is configured.
 	// Both are ordinarily empty.
-	for _, pair := range strings.Split(env("EGRESS_URLS", ""), ",") {
+	for pair := range strings.SplitSeq(env("EGRESS_URLS", ""), ",") {
 		if strings.TrimSpace(pair) == "" {
 			continue
 		}

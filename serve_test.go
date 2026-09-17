@@ -152,7 +152,7 @@ func TestACallStreamsTheAnswerThenTheMeter(t *testing.T) {
 func TestACallSpendsTheTenantsOwnKeyWhenThereIsOne(t *testing.T) {
 	s, key := serving(t, newStore(map[string]string{
 		ownRef(alice, "dummy", "default"): "sk-theirs",
-		orgRef(alice, "dummy", "default"):  "sk-ours",
+		orgRef(alice, "dummy", "default"): "sk-ours",
 	}), 100)
 
 	_, body := ask(t, s, http.MethodPost, "/v1/call", token(t, key, nil), call())
@@ -241,7 +241,7 @@ func TestTheCeilingIsPerPrincipal(t *testing.T) {
 	mine := token(t, key, nil)
 	theirs := token(t, key, func(c *jwt.Claims) { c.Owner = "other"; c.Id = "u-9" })
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if code, body := ask(t, s, http.MethodGet, "/v1/health", mine, nil); code != http.StatusOK {
 			t.Fatalf("call %d refused early: %d %s", i, code, body)
 		}

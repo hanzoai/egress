@@ -39,7 +39,7 @@ func TestTheIdentityKeepsItsKeyPastTheFirstSignature(t *testing.T) {
 
 	// Whatever the first signature left unreachable, collect it and let its
 	// finalizer run. Under the fault this is the moment the key is lost.
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		runtime.GC()
 		time.Sleep(time.Millisecond)
 	}

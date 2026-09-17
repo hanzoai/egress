@@ -5,7 +5,7 @@
 // that broke its build.
 module github.com/hanzoai/egress/spend
 
-go 1.26.8
+go 1.27.1
 
 require (
 	github.com/valyala/fasthttp v1.71.0

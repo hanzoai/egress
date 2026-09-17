@@ -34,7 +34,7 @@ func TestExampleJWKSIsTheIAMPrefixedURL(t *testing.T) {
 		t.Fatal(err)
 	}
 	var jwks string
-	for _, line := range strings.Split(string(raw), "\n") {
+	for line := range strings.SplitSeq(string(raw), "\n") {
 		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "EGRESS_JWKS="); ok {
 			jwks = v
 			break

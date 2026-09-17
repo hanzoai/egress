@@ -38,12 +38,12 @@ func TestACallerCannotNameATenantOrAnUpstream(t *testing.T) {
 	banned := []string{"url", "endpoint", "host", "base", "org", "owner", "tenant", "user", "path", "ref", "secret", "credential"}
 	for _, wire := range []any{Call{}, Enroll{}, Turn{}} {
 		typ := reflect.TypeOf(wire)
-		for i := 0; i < typ.NumField(); i++ {
-			name := strings.ToLower(typ.Field(i).Name)
+		for field := range typ.Fields() {
+			name := strings.ToLower(field.Name)
 			for _, bad := range banned {
 				if strings.Contains(name, bad) {
 					t.Errorf("%s.%s: a caller must not be able to name %q — it comes from the token or from this host",
-						typ.Name(), typ.Field(i).Name, bad)
+						typ.Name(), field.Name, bad)
 				}
 			}
 		}
