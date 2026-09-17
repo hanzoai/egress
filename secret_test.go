@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"sync"
@@ -32,9 +33,7 @@ type store struct {
 
 func newStore(pairs map[string]string) *store {
 	s := &store{held: map[string]string{}}
-	for k, v := range pairs {
-		s.held[k] = v
-	}
+	maps.Copy(s.held, pairs)
 	return s
 }
 
@@ -128,7 +127,7 @@ func TestCustodyPathIsBuiltFromThePrincipal(t *testing.T) {
 func TestTheTenantsOwnKeyOutranksTheSharedOne(t *testing.T) {
 	s := newStore(map[string]string{
 		ownRef(alice, "openai", "default"): "sk-theirs",
-		orgRef(alice, "openai", "default"):  "sk-ours",
+		orgRef(alice, "openai", "default"): "sk-ours",
 	})
 	key, scope, err := newCustody(s).resolve(context.Background(), alice, "openai", "default")
 	if err != nil {
@@ -196,7 +195,7 @@ func TestAStoreThatCannotAnswerEndsTheCall(t *testing.T) {
 func TestAFaultWordedLikeAnAbsenceDoesNotSpendTheSharedKey(t *testing.T) {
 	s := newStore(map[string]string{
 		ownRef(alice, "openai", "default"): "sk-hers",
-		orgRef(alice, "openai", "default"):  "sk-ours",
+		orgRef(alice, "openai", "default"): "sk-ours",
 	})
 	s.fail = errors.New("kmsclient: status 500: {\"error\":\"upstream tenant not found\"}")
 	s.failOn = ownRef(alice, "openai", "default")
