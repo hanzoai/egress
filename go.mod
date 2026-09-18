@@ -11,7 +11,7 @@ require (
 	github.com/luxfi/keys v1.4.2
 	github.com/luxfi/kms v1.12.26
 	github.com/valyala/fasthttp v1.72.0
-	github.com/zap-proto/http v0.3.9
+	github.com/zap-proto/http v0.3.11
 	github.com/zap-proto/zip v1.36.50
 	golang.org/x/sys v0.47.0
 )

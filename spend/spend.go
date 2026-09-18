@@ -144,7 +144,7 @@ func (c *carrier) RoundTrip(r *http.Request) (*http.Response, error) {
 	req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
 	req.SetBody(asked)
 
-	if err := c.to.Do(req, resp); err != nil {
+	if err := c.to.DoContext(r.Context(), req, resp); err != nil {
 		return nil, fmt.Errorf("egress at %s: %w", c.cfg.Address, err)
 	}
 	if resp.StatusCode() != http.StatusOK {
