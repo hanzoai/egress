@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -364,6 +366,7 @@ func awsServing(t *testing.T, st Secrets) (*Server, jwt.Key, *fakeAWS, *logged) 
 		c.IAM = "https://" + iamHost
 		c.ClientID = egressID
 		c.Platform = map[string]string{"aws/" + hostedLabel: ""}
+		c.Callers = map[string][]string{"aws/" + hostedLabel: {"hanzo-visor"}}
 	})
 	f := newFakeAWS(t)
 	s.self.secret = func() (string, error) { return egressSecret, nil }
@@ -765,6 +768,8 @@ func TestAnAWSConfigurationIsChecked(t *testing.T) {
 			Listen: ":0", Issuer: issuer, JWKS: "https://hanzo.id/jwks", Audience: audience,
 			KMS: "zap://kms:9999", KMSOrg: "hanzo", KMSPath: "hanzo/egress", Recipient: aRecipient(),
 			RPM: 1, Deadline: 1, IAM: "https://hanzo.id", ClientID: egressID, AWS: []string{ec2Host},
+			Platform: map[string]string{"aws/" + hostedLabel: ""},
+			Callers:  map[string][]string{"aws/" + hostedLabel: {"hanzo-visor"}},
 		}
 	}
 	if err := func() error { c := base(); return c.Check() }(); err != nil {
@@ -779,6 +784,9 @@ func TestAnAWSConfigurationIsChecked(t *testing.T) {
 		"no iam":            func(c *Config) { c.IAM = "" },
 		"cleartext iam":     func(c *Config) { c.IAM = "http://hanzo.id" },
 		"an uppercase host": func(c *Config) { c.AWS = []string{"EC2.us-east-1.amazonaws.com"} },
+		"no caller":         func(c *Config) { c.Callers = nil },
+		"a stray caller":    func(c *Config) { c.Callers["aws/other"] = []string{"hanzo-visor"} },
+		"egress as caller":  func(c *Config) { c.Callers["aws/"+hostedLabel] = []string{egressID} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := base()
@@ -888,8 +896,37 @@ func TestAnUnlistedLabelNeverReachesThePlatformAccount(t *testing.T) {
 			t.Fatalf("the platform's key went upstream: %q", saw)
 		}
 		s.cfg.Platform = map[string]string{"digitalocean/default": ""}
+		s.cfg.Callers = map[string][]string{"digitalocean/default": {"hanzo-visor"}}
 		if code, body := ask(t, s, http.MethodPost, "/v1/fetch", computeToken(t, key), in); code != http.StatusOK || saw != "Bearer dop_platform" {
 			t.Fatalf("a listed label was refused: %d %s (upstream saw %q)", code, body, saw)
 		}
 	})
+}
+
+// The platform accounts and their callers read from the environment the way a
+// systemd unit sets them, and a malformed entry refuses to start.
+func TestThePlatformIsReadFromTheEnvironment(t *testing.T) {
+	t.Setenv("EGRESS_PLATFORM", "aws/hanzo-compute, digitalocean/default")
+	t.Setenv("EGRESS_PLATFORM_CALLERS", "aws/hanzo-compute=hanzo-visor,aws/hanzo-compute=hanzo-ops, digitalocean/default=hanzo-visor")
+	var c Config
+	c.Flags(flag.NewFlagSet("egress", flag.ContinueOnError))
+	if len(c.Platform) != 2 || !slices.Equal(c.Callers["aws/hanzo-compute"], []string{"hanzo-visor", "hanzo-ops"}) ||
+		!slices.Equal(c.Callers["digitalocean/default"], []string{"hanzo-visor"}) || len(c.unreadable) != 0 {
+		t.Fatalf("platform = %v callers = %v unreadable = %v", c.Platform, c.Callers, c.unreadable)
+	}
+	for _, bad := range []string{"aws", "AWS/hanzo-compute", "aws/", "aws/hanzo compute", "aws/../x"} {
+		t.Setenv("EGRESS_PLATFORM", bad)
+		var c Config
+		c.Flags(flag.NewFlagSet("egress", flag.ContinueOnError))
+		if len(c.unreadable) == 0 {
+			t.Errorf("EGRESS_PLATFORM=%q was read", bad)
+		}
+	}
+	t.Setenv("EGRESS_PLATFORM", "")
+	t.Setenv("EGRESS_PLATFORM_CALLERS", "aws/hanzo-compute")
+	var d Config
+	d.Flags(flag.NewFlagSet("egress", flag.ContinueOnError))
+	if len(d.unreadable) == 0 {
+		t.Error("a caller with no client id was read")
+	}
 }

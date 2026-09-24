@@ -80,6 +80,15 @@ type Config struct {
 	// org spends the platform's accounts under any label it names.
 	Platform map[string]string
 
+	// Callers are the programs that may spend each platform account, by client
+	// id: "aws/hanzo-compute=hanzo-visor". IAM stamps `owner` with the minting
+	// application's org and takes RFC 8707 `resource` from any client, so every
+	// application filed under the platform org — and a person signed in through
+	// one — is verified here as a principal of that org. Membership says nothing
+	// about which of them runs the platform's machines; this does. A platform
+	// account with no caller is spent by no one.
+	Callers map[string][]string
+
 	// AWS lists the AWS API endpoints egress signs requests for, by host:
 	// "ec2.us-east-1.amazonaws.com". The service and region a signature is
 	// scoped to are read from the host, so an entry is spelled
@@ -172,6 +181,15 @@ func (c *Config) Flags(fs *flag.FlagSet) {
 		}
 	}
 	fs.Var(platform{&c.Platform}, "platform", "a platform account, <provider>/<label> (repeatable)")
+	for entry := range strings.SplitSeq(env("EGRESS_PLATFORM_CALLERS", ""), ",") {
+		if strings.TrimSpace(entry) == "" {
+			continue
+		}
+		if err := (callers{&c.Callers}).Set(entry); err != nil {
+			c.unreadable = append(c.unreadable, "EGRESS_PLATFORM_CALLERS "+entry)
+		}
+	}
+	fs.Var(callers{&c.Callers}, "platform-caller", "a program that may spend a platform account, <provider>/<label>=<client id> (repeatable)")
 }
 
 // Check reports why this configuration cannot be served. It refuses rather than
@@ -228,6 +246,24 @@ func (c *Config) Check() error {
 			return errors.New("egress: aws needs -iam (https) and -client-id: a role is assumed with this service's own identity")
 		}
 	}
+	// A platform account is spent by the programs named for it and no one else,
+	// and a caller named for an account that is not one is a typo that would
+	// otherwise grant nothing silently.
+	for key := range c.Platform {
+		if len(c.Callers[key]) == 0 {
+			return fmt.Errorf("egress: platform account %s has no caller: set EGRESS_PLATFORM_CALLERS %s=<client id>", key, key)
+		}
+	}
+	for key, who := range c.Callers {
+		if _, ok := c.Platform[key]; !ok {
+			return fmt.Errorf("egress: EGRESS_PLATFORM_CALLERS names %s, which EGRESS_PLATFORM does not list", key)
+		}
+		for _, client := range who {
+			if client == c.ClientID {
+				return fmt.Errorf("egress: %s names egress itself as a caller", key)
+			}
+		}
+	}
 	// A listener takes the same grammar an origin does with one difference: the
 	// host may be empty, because ":5432" means every interface. There is no
 	// dialling equivalent of that, which is why `where` refuses it.
@@ -270,6 +306,24 @@ func (p platform) Set(v string) error {
 		*p.into = map[string]string{}
 	}
 	(*p.into)[key] = ""
+	return nil
+}
+
+// callers collects the repeatable -platform-caller flag: <provider>/<label>=<client id>.
+type callers struct{ into *map[string][]string }
+
+func (c callers) String() string { return "" }
+
+func (c callers) Set(v string) error {
+	name, client, ok := strings.Cut(strings.TrimSpace(v), "=")
+	key, err := named(strings.TrimSpace(name))
+	if !ok || err != nil || !segment(strings.TrimSpace(client)) {
+		return fmt.Errorf("want <provider>/<label>=<client id>, got %q", v)
+	}
+	if *c.into == nil {
+		*c.into = map[string][]string{}
+	}
+	(*c.into)[key] = append((*c.into)[key], strings.TrimSpace(client))
 	return nil
 }
 

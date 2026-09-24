@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -186,13 +187,17 @@ func (s *Server) fetch(ctx context.Context, in *spend.Fetch) (*spend.Fetched, er
 // account under label. A tenant's principals share their own org's accounts. The
 // platform's own org is where every Hanzo program and person is filed, and a
 // label is whatever the caller names, so there the shared account is spent only
-// for a label the configuration lists as a platform account.
+// for a label the configuration lists as a platform account, and only by a
+// program named as its caller — never a person, never another program of the org.
 func (s *Server) shares(p Principal, provider, label string) bool {
 	if p.Org != s.cfg.KMSOrg {
 		return true
 	}
-	_, ok := s.cfg.Platform[provider+"/"+label]
-	return ok
+	key := provider + "/" + label
+	if _, ok := s.cfg.Platform[key]; !ok || p.Kind != Programs {
+		return false
+	}
+	return slices.Contains(s.cfg.Callers[key], p.Name)
 }
 
 // request is one upstream request as egress will send it, less where it goes
