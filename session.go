@@ -99,7 +99,7 @@ func (s *Server) origin(ctx context.Context, p Principal, name string) (string, 
 	// hold two accounts on one vendor. A second credential for one database is
 	// a second database as far as a caller is concerned, so it is a second
 	// name, and there is nothing extra to spell in a connection URL.
-	return s.custody.resolve(ctx, p, base, "default", true)
+	return s.custody.resolve(ctx, p, base, "default", s.shares(p, base, "default"))
 }
 
 // session is one brokered connection: who opened it, to what, and on whose
