@@ -97,7 +97,7 @@ func (s *Server) spend(ctx context.Context, p Principal, in *Call, w *frames) (M
 		return Meter{}, fmt.Errorf("egress: label %q is not a name", in.Label)
 	}
 
-	key, scope, err := s.custody.resolve(ctx, p, provider, label)
+	key, scope, err := s.custody.resolve(ctx, p, provider, label, true)
 	if err != nil {
 		return Meter{}, err
 	}

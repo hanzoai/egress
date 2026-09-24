@@ -363,6 +363,7 @@ func awsServing(t *testing.T, st Secrets) (*Server, jwt.Key, *fakeAWS, *logged) 
 		c.AWS = []string{ec2Host}
 		c.IAM = "https://" + iamHost
 		c.ClientID = egressID
+		c.Platform = map[string]string{"aws/" + hostedLabel: ""}
 	})
 	f := newFakeAWS(t)
 	s.self.secret = func() (string, error) { return egressSecret, nil }
@@ -850,4 +851,45 @@ func TestEgressOwnTokenIsNotACaller(t *testing.T) {
 	if code, body, _ := fetchedAs(t, s, computeToken(t, key), describeInstances()); code != http.StatusOK {
 		t.Fatalf("compute was refused: %d %s", code, body)
 	}
+}
+
+// The platform's own org is where every Hanzo program is filed, and a label is
+// whatever a caller names — a tenant's provider row name, carried by compute. So
+// the platform's shared custody is reached only for a label the configuration
+// lists: an unlisted one is the caller's own custody or nothing, for AWS and for
+// a bearer cloud alike.
+func TestAnUnlistedLabelNeverReachesThePlatformAccount(t *testing.T) {
+	t.Run("aws", func(t *testing.T) {
+		st := newStore(map[string]string{accountRef("mallory"): roleDescriptor})
+		s, key, f, _ := awsServing(t, st)
+		in := describeInstances()
+		in.Label = "mallory"
+		if code, body, _ := fetchedAs(t, s, computeToken(t, key), in); code == http.StatusOK {
+			t.Fatalf("an unlisted label spent the platform's account: %s", body)
+		}
+		if n := len(f.seen("")); n != 0 {
+			t.Fatalf("an unlisted label reached AWS %d times", n)
+		}
+	})
+	t.Run("a bearer cloud", func(t *testing.T) {
+		hanzo := Principal{Org: "hanzo", Kind: Programs, Name: "hanzo-visor"}
+		st := newStore(map[string]string{orgRef(hanzo, "digitalocean", "default"): "dop_platform"})
+		s, key := serving(t, st, 100)
+		var saw string
+		upstream(t, s, "digitalocean", func(w http.ResponseWriter, r *http.Request) {
+			saw = r.Header.Get("Authorization")
+			_, _ = w.Write([]byte(`{}`))
+		})
+		in := spend.Fetch{Provider: "DigitalOcean", Label: "default", Method: "GET", Path: "/v2/droplets"}
+		if code, body := ask(t, s, http.MethodPost, "/v1/fetch", computeToken(t, key), in); code == http.StatusOK {
+			t.Fatalf("an unlisted label spent the platform's DigitalOcean key: %s", body)
+		}
+		if saw != "" {
+			t.Fatalf("the platform's key went upstream: %q", saw)
+		}
+		s.cfg.Platform = map[string]string{"digitalocean/default": ""}
+		if code, body := ask(t, s, http.MethodPost, "/v1/fetch", computeToken(t, key), in); code != http.StatusOK || saw != "Bearer dop_platform" {
+			t.Fatalf("a listed label was refused: %d %s (upstream saw %q)", code, body, saw)
+		}
+	})
 }

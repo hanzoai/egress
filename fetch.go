@@ -147,7 +147,7 @@ func (s *Server) fetch(ctx context.Context, in *spend.Fetch) (*spend.Fetched, er
 		}
 		attach, hidden, scope, form = signed(signer, at), secrets(signer), paid, d.form()
 	} else {
-		key, paid, err := s.custody.resolve(ctx, p, provider, label)
+		key, paid, err := s.custody.resolve(ctx, p, provider, label, s.shares(p, provider, label))
 		if err != nil {
 			return nil, err
 		}
@@ -180,6 +180,19 @@ func (s *Server) fetch(ctx context.Context, in *spend.Fetch) (*spend.Fetched, er
 		"form", form, "host", at.host, "method", method, "path", in.Path,
 		"action", action(out.kind, out.body), "status", got.Status, "millis", got.Millis)
 	return got, nil
+}
+
+// shares reports whether p's fetch may fall through to its org's shared cloud
+// account under label. A tenant's principals share their own org's accounts. The
+// platform's own org is where every Hanzo program and person is filed, and a
+// label is whatever the caller names, so there the shared account is spent only
+// for a label the configuration lists as a platform account.
+func (s *Server) shares(p Principal, provider, label string) bool {
+	if p.Org != s.cfg.KMSOrg {
+		return true
+	}
+	_, ok := s.cfg.Platform[provider+"/"+label]
+	return ok
 }
 
 // request is one upstream request as egress will send it, less where it goes

@@ -72,6 +72,14 @@ type Config struct {
 	// this identity, and nothing a caller holds.
 	ClientID string
 
+	// Platform lists the platform's own cloud accounts, <provider>/<label>
+	// ("aws/hanzo-compute"). A fetch by a principal of the platform's own org
+	// (KMSOrg) falls through from its own custody to the org's shared account
+	// ONLY for a label listed here; every other label is the caller's own custody
+	// or nothing. Without it, every program and person filed under the platform
+	// org spends the platform's accounts under any label it names.
+	Platform map[string]string
+
 	// AWS lists the AWS API endpoints egress signs requests for, by host:
 	// "ec2.us-east-1.amazonaws.com". The service and region a signature is
 	// scoped to are read from the host, so an entry is spelled
@@ -145,7 +153,7 @@ func (c *Config) Flags(fs *flag.FlagSet) {
 			continue
 		}
 		if err := (urls{&c.URLs}).Set(pair); err != nil {
-			c.unreadable = append(c.unreadable, pair)
+			c.unreadable = append(c.unreadable, "EGRESS_URLS "+pair)
 		}
 	}
 	fs.Var(urls{&c.URLs}, "url", "upstream base URL for one provider, provider=url (repeatable)")
@@ -155,6 +163,15 @@ func (c *Config) Flags(fs *flag.FlagSet) {
 		}
 	}
 	fs.Var(hosts{&c.AWS}, "aws", "AWS API endpoint egress signs for, <service>.<region>.amazonaws.com (repeatable)")
+	for entry := range strings.SplitSeq(env("EGRESS_PLATFORM", ""), ",") {
+		if strings.TrimSpace(entry) == "" {
+			continue
+		}
+		if err := (platform{&c.Platform}).Set(entry); err != nil {
+			c.unreadable = append(c.unreadable, "EGRESS_PLATFORM "+entry)
+		}
+	}
+	fs.Var(platform{&c.Platform}, "platform", "a platform account, <provider>/<label> (repeatable)")
 }
 
 // Check reports why this configuration cannot be served. It refuses rather than
@@ -178,7 +195,7 @@ func (c *Config) Check() error {
 		return errors.New("egress: rpm and deadline must be positive")
 	}
 	if len(c.unreadable) > 0 {
-		return fmt.Errorf("egress: EGRESS_URLS wants provider=url, got %s", strings.Join(c.unreadable, ", "))
+		return fmt.Errorf("egress: unreadable configuration: %s", strings.Join(c.unreadable, ", "))
 	}
 	// An override moves an upstream egress already carries, so it has to be
 	// spelled the way that upstream is reached: a cloud API by an https URL, a
@@ -237,6 +254,32 @@ func (u urls) Set(v string) error {
 	}
 	(*u.into)[strings.TrimSpace(provider)] = strings.TrimSpace(target)
 	return nil
+}
+
+// platform collects the repeatable -platform flag: <provider>/<label>.
+type platform struct{ into *map[string]string }
+
+func (p platform) String() string { return "" }
+
+func (p platform) Set(v string) error {
+	key, err := named(strings.TrimSpace(v))
+	if err != nil {
+		return err
+	}
+	if *p.into == nil {
+		*p.into = map[string]string{}
+	}
+	(*p.into)[key] = ""
+	return nil
+}
+
+// named reads <provider>/<label>, each a custody segment.
+func named(v string) (string, error) {
+	provider, label, ok := strings.Cut(v, "/")
+	if !ok || !segment(provider) || provider != strings.ToLower(provider) || !segment(label) {
+		return "", fmt.Errorf("want <provider>/<label>, got %q", v)
+	}
+	return provider + "/" + label, nil
 }
 
 // hosts collects the repeatable -aws flag.
