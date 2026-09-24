@@ -803,12 +803,25 @@ func TestAnAWSConfigurationIsChecked(t *testing.T) {
 		})
 	}
 	for host, want := range map[string]endpoint{
-		ec2Host:                                {host: ec2Host, service: "ec2", region: "us-east-1"},
-		"ec2.us-gov-west-1.amazonaws.com":      {host: "ec2.us-gov-west-1.amazonaws.com", service: "ec2", region: "us-gov-west-1"},
-		"lightsail.eu-central-1.amazonaws.com": {host: "lightsail.eu-central-1.amazonaws.com", service: "lightsail", region: "eu-central-1"},
+		ec2Host:                           {host: ec2Host, service: "ec2", region: "us-east-1"},
+		"ec2.us-gov-west-1.amazonaws.com": {host: "ec2.us-gov-west-1.amazonaws.com", service: "ec2", region: "us-gov-west-1"},
 	} {
 		if got, ok := endpointOf(host); !ok || got != want {
 			t.Errorf("endpointOf(%q) = %+v, %v", host, got, ok)
+		}
+	}
+	// An identity service answers with credentials, so it is never an endpoint
+	// egress signs a caller's request for; nor is a service nobody listed.
+	for _, host := range []string{"sts.us-east-1.amazonaws.com", "iam.us-east-1.amazonaws.com",
+		"sso.us-east-1.amazonaws.com", "signin.us-east-1.amazonaws.com", "portal.us-east-1.amazonaws.com",
+		"lightsail.eu-central-1.amazonaws.com", "s3.us-east-1.amazonaws.com"} {
+		if got, ok := endpointOf(host); ok {
+			t.Errorf("endpointOf(%q) = %+v — egress would sign for it", host, got)
+		}
+		c := base()
+		c.AWS = []string{ec2Host, host}
+		if err := c.Check(); err == nil {
+			t.Errorf("a configuration admitting %s was accepted", host)
 		}
 	}
 }

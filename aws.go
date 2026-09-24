@@ -69,10 +69,24 @@ type endpoint struct {
 // and such a host is refused rather than signed for wrongly.
 var endpointForm = regexp.MustCompile(`^([a-z][a-z0-9]*)\.([a-z]{2}(?:-[a-z]+)+-[0-9]+)\.amazonaws\.com$`)
 
-// endpointOf reads the signing scope out of an endpoint's name.
+// signable are the AWS services egress signs a caller's request for. It is an
+// allowlist of the APIs a caller has a use for, and it is short on purpose:
+// signed as the platform's role, an identity service answers with credentials —
+// STS AssumeRole returns a fresh key pair and session token in its body, and so
+// do IAM CreateAccessKey, SSO GetRoleCredentials and the sign-in federation
+// endpoints — and handing that body back would hand the caller the role. Egress
+// reaches STS itself, for its own exchange, and never on a caller's behalf.
+// Adding a service is one line, written by whoever checked that nothing it
+// answers is a credential.
+var signable = map[string]bool{
+	"ec2": true,
+}
+
+// endpointOf reads the signing scope out of an endpoint's name, for a service
+// egress signs for.
 func endpointOf(host string) (endpoint, bool) {
 	m := endpointForm.FindStringSubmatch(host)
-	if m == nil {
+	if m == nil || !signable[m[1]] {
 		return endpoint{}, false
 	}
 	return endpoint{host: host, service: m[1], region: m[2]}, true
