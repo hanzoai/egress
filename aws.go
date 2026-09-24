@@ -177,17 +177,32 @@ func (s *Server) resolveAWS(ctx context.Context, p Principal, label string) (des
 		if err != nil {
 			return descriptor{}, "", err
 		}
-		d, err := account([]byte(opened))
-		return d, ScopeOrg, err
+		raw = []byte(opened)
 	}
 	d, err := account(raw)
 	if err != nil {
 		return descriptor{}, "", err
 	}
+	// A platform account is a role, sealed or not, and a role in the account
+	// its label is pinned to. A key pair here is refused whatever protects it:
+	// the platform's accounts hold no long-lived key, so one appearing is a
+	// value somebody put there.
 	if d.RoleArn == "" {
-		return descriptor{}, "", fmt.Errorf("%w: an aws key pair is spent only sealed, and %s is in the clear", ErrNotSealed, ref)
+		return descriptor{}, "", fmt.Errorf("egress: aws: the platform account %s is a role, and %s holds a key pair", label, ref)
+	}
+	if pin := s.cfg.Platform[amazon+"/"+label]; roleAccount(d.RoleArn) != pin {
+		return descriptor{}, "", fmt.Errorf("egress: aws: the platform account %s is pinned to %s, and its role is in another account", label, pin)
 	}
 	return d, ScopeOrg, nil
+}
+
+// roleAccount is the account id a role ARN names: arn:aws:iam::<account>:role/….
+func roleAccount(arn string) string {
+	parts := strings.SplitN(arn, ":", 6)
+	if len(parts) != 6 {
+		return ""
+	}
+	return parts[4]
 }
 
 // lease is how long an assumed role's credentials last: the shortest AWS

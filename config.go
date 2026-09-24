@@ -72,12 +72,15 @@ type Config struct {
 	// this identity, and nothing a caller holds.
 	ClientID string
 
-	// Platform lists the platform's own cloud accounts, <provider>/<label>
-	// ("aws/hanzo-compute"). A fetch by a principal of the platform's own org
-	// (KMSOrg) falls through from its own custody to the org's shared account
-	// ONLY for a label listed here; every other label is the caller's own custody
-	// or nothing. Without it, every program and person filed under the platform
-	// org spends the platform's accounts under any label it names.
+	// Platform lists the platform's own cloud accounts, <provider>/<label>, and
+	// for AWS the account id the label is pinned to:
+	// "aws/hanzo-compute@532217001883". A fetch by a principal of the platform's
+	// own org (KMSOrg) falls through from its own custody to the org's shared
+	// account ONLY for a label listed here; every other label is the caller's own
+	// custody or nothing. Without it, every program and person filed under the
+	// platform org spends the platform's accounts under any label it names. The
+	// pin means a descriptor rewritten in KMS to name a role in another account is
+	// refused rather than assumed.
 	Platform map[string]string
 
 	// Callers are the programs that may spend each platform account, by client
@@ -180,7 +183,7 @@ func (c *Config) Flags(fs *flag.FlagSet) {
 			c.unreadable = append(c.unreadable, "EGRESS_PLATFORM "+entry)
 		}
 	}
-	fs.Var(platform{&c.Platform}, "platform", "a platform account, <provider>/<label> (repeatable)")
+	fs.Var(platform{&c.Platform}, "platform", "a platform account, <provider>/<label>, aws/<label>@<account id> (repeatable)")
 	for entry := range strings.SplitSeq(env("EGRESS_PLATFORM_CALLERS", ""), ",") {
 		if strings.TrimSpace(entry) == "" {
 			continue
@@ -249,7 +252,10 @@ func (c *Config) Check() error {
 	// A platform account is spent by the programs named for it and no one else,
 	// and a caller named for an account that is not one is a typo that would
 	// otherwise grant nothing silently.
-	for key := range c.Platform {
+	for key, pin := range c.Platform {
+		if !pinned(key, pin) {
+			return fmt.Errorf("egress: platform account %s wants its AWS account id, %s@<12 digits>, and only an AWS label takes one", key, key)
+		}
 		if len(c.Callers[key]) == 0 {
 			return fmt.Errorf("egress: platform account %s has no caller: set EGRESS_PLATFORM_CALLERS %s=<client id>", key, key)
 		}
@@ -298,15 +304,34 @@ type platform struct{ into *map[string]string }
 func (p platform) String() string { return "" }
 
 func (p platform) Set(v string) error {
-	key, err := named(strings.TrimSpace(v))
+	name, pin, _ := strings.Cut(strings.TrimSpace(v), "@")
+	key, err := named(name)
 	if err != nil {
 		return err
 	}
 	if *p.into == nil {
 		*p.into = map[string]string{}
 	}
-	(*p.into)[key] = ""
+	(*p.into)[key] = pin
 	return nil
+}
+
+// pinned reports whether a platform account's pin is right for its provider:
+// an AWS label names the twelve-digit account its role must be in, and a cloud
+// that takes a bearer has no account to pin.
+func pinned(key, pin string) bool {
+	if !strings.HasPrefix(key, "aws/") {
+		return pin == ""
+	}
+	if len(pin) != 12 {
+		return false
+	}
+	for i := 0; i < len(pin); i++ {
+		if pin[i] < '0' || pin[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // callers collects the repeatable -platform-caller flag: <provider>/<label>=<client id>.

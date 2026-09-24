@@ -365,7 +365,7 @@ func awsServing(t *testing.T, st Secrets) (*Server, jwt.Key, *fakeAWS, *logged) 
 		c.AWS = []string{ec2Host}
 		c.IAM = "https://" + iamHost
 		c.ClientID = egressID
-		c.Platform = map[string]string{"aws/" + hostedLabel: ""}
+		c.Platform = map[string]string{"aws/" + hostedLabel: "532217001883"}
 		c.Callers = map[string][]string{"aws/" + hostedLabel: {"hanzo-visor"}}
 	})
 	f := newFakeAWS(t)
@@ -551,25 +551,30 @@ func TestARefusedRoleSaysOnlyTheCode(t *testing.T) {
 	clean(t, f, body, logs.String())
 }
 
-// A key pair is the second form, and the platform's is spent only sealed: in
-// the clear it is refused before anything is signed, sealed it signs.
-func TestAnAWSKeyPairIsSpentOnlySealed(t *testing.T) {
-	t.Run("in the clear", func(t *testing.T) {
-		held := newStore(map[string]string{accountRef(hostedLabel): staticDescriptor()})
-		store, _ := sealedOver(t, held)
-		s, key, f, logs := awsServing(t, store)
+// The platform's account is a role in the account its label is pinned to. A key
+// pair there is refused whether it is in the clear or sealed, and so is a role
+// in any other account; a role is spent in the clear or sealed alike.
+func TestAPlatformAccountIsARoleInItsPinnedAccount(t *testing.T) {
+	for name, value := range map[string]string{
+		"a key pair in the clear":   staticDescriptor(),
+		"a role in another account": `{"roleArn":"arn:aws:iam::111111111111:role/hanzo-compute"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			held := newStore(map[string]string{accountRef(hostedLabel): value})
+			store, _ := sealedOver(t, held)
+			s, key, f, logs := awsServing(t, store)
+			code, body, _ := fetchedAs(t, s, computeToken(t, key), describeInstances())
+			if code == http.StatusOK {
+				t.Fatalf("%s was spent: %s", name, body)
+			}
+			if n := len(f.seen("")); n != 0 {
+				t.Fatalf("%s reached AWS %d times", name, n)
+			}
+			clean(t, f, body, logs.String())
+		})
+	}
 
-		code, body, _ := fetchedAs(t, s, computeToken(t, key), describeInstances())
-		if code == http.StatusOK {
-			t.Fatalf("a key pair in the clear was spent: %s", body)
-		}
-		if n := len(f.seen("")); n != 0 {
-			t.Fatalf("a refused key pair reached AWS %d times", n)
-		}
-		clean(t, f, body, logs.String())
-	})
-
-	t.Run("sealed", func(t *testing.T) {
+	t.Run("a key pair, sealed", func(t *testing.T) {
 		held := newStore(nil)
 		store, _ := sealedOver(t, held)
 		if err := store.PutSecret(context.Background(), accountRef(hostedLabel), []byte(staticDescriptor())); err != nil {
@@ -579,17 +584,12 @@ func TestAnAWSKeyPairIsSpentOnlySealed(t *testing.T) {
 			t.Fatal("the store holds the key in the clear")
 		}
 		s, key, f, logs := awsServing(t, store)
-
-		code, body, out := fetchedAs(t, s, computeToken(t, key), describeInstances())
-		if code != http.StatusOK || out.Status != http.StatusOK {
-			t.Fatalf("code = %d, body %s", code, body)
+		code, body, _ := fetchedAs(t, s, computeToken(t, key), describeInstances())
+		if code == http.StatusOK {
+			t.Fatalf("a sealed key pair was spent as the platform account: %s", body)
 		}
-		calls := f.seen(ec2Host)
-		if len(calls) != 1 || calls[0].failed != "" || calls[0].keyID != staticID || calls[0].token != "" {
-			t.Fatalf("EC2 calls = %+v, want one signed with the static key", calls)
-		}
-		if n := len(f.seen(stsHost)) + len(f.seen(iamHost)); n != 0 {
-			t.Fatalf("a key pair made %d identity calls", n)
+		if n := len(f.seen("")); n != 0 {
+			t.Fatalf("a refused key pair reached AWS %d times", n)
 		}
 		clean(t, f, body, logs.String())
 	})
@@ -768,7 +768,7 @@ func TestAnAWSConfigurationIsChecked(t *testing.T) {
 			Listen: ":0", Issuer: issuer, JWKS: "https://hanzo.id/jwks", Audience: audience,
 			KMS: "zap://kms:9999", KMSOrg: "hanzo", KMSPath: "hanzo/egress", Recipient: aRecipient(),
 			RPM: 1, Deadline: 1, IAM: "https://hanzo.id", ClientID: egressID, AWS: []string{ec2Host},
-			Platform: map[string]string{"aws/" + hostedLabel: ""},
+			Platform: map[string]string{"aws/" + hostedLabel: "532217001883"},
 			Callers:  map[string][]string{"aws/" + hostedLabel: {"hanzo-visor"}},
 		}
 	}
@@ -787,6 +787,12 @@ func TestAnAWSConfigurationIsChecked(t *testing.T) {
 		"no caller":         func(c *Config) { c.Callers = nil },
 		"a stray caller":    func(c *Config) { c.Callers["aws/other"] = []string{"hanzo-visor"} },
 		"egress as caller":  func(c *Config) { c.Callers["aws/"+hostedLabel] = []string{egressID} },
+		"an unpinned role":  func(c *Config) { c.Platform["aws/"+hostedLabel] = "" },
+		"a short pin":       func(c *Config) { c.Platform["aws/"+hostedLabel] = "53221700188" },
+		"a pin on a bearer": func(c *Config) {
+			c.Platform["digitalocean/default"] = "532217001883"
+			c.Callers["digitalocean/default"] = []string{"hanzo-visor"}
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := base()
@@ -906,11 +912,11 @@ func TestAnUnlistedLabelNeverReachesThePlatformAccount(t *testing.T) {
 // The platform accounts and their callers read from the environment the way a
 // systemd unit sets them, and a malformed entry refuses to start.
 func TestThePlatformIsReadFromTheEnvironment(t *testing.T) {
-	t.Setenv("EGRESS_PLATFORM", "aws/hanzo-compute, digitalocean/default")
+	t.Setenv("EGRESS_PLATFORM", "aws/hanzo-compute@532217001883, digitalocean/default")
 	t.Setenv("EGRESS_PLATFORM_CALLERS", "aws/hanzo-compute=hanzo-visor,aws/hanzo-compute=hanzo-ops, digitalocean/default=hanzo-visor")
 	var c Config
 	c.Flags(flag.NewFlagSet("egress", flag.ContinueOnError))
-	if len(c.Platform) != 2 || !slices.Equal(c.Callers["aws/hanzo-compute"], []string{"hanzo-visor", "hanzo-ops"}) ||
+	if len(c.Platform) != 2 || c.Platform["aws/hanzo-compute"] != "532217001883" || !slices.Equal(c.Callers["aws/hanzo-compute"], []string{"hanzo-visor", "hanzo-ops"}) ||
 		!slices.Equal(c.Callers["digitalocean/default"], []string{"hanzo-visor"}) || len(c.unreadable) != 0 {
 		t.Fatalf("platform = %v callers = %v unreadable = %v", c.Platform, c.Callers, c.unreadable)
 	}
