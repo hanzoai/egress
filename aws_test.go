@@ -949,3 +949,59 @@ func TestThePlatformIsReadFromTheEnvironment(t *testing.T) {
 		t.Error("a caller with no client id was read")
 	}
 }
+
+// A model call and a database session reach the platform org's shared custody by
+// the same rule a fetch does: a listed label, a listed caller. Another program of
+// the platform org, and a person in it, spend nothing of the platform's.
+func TestTheCallerCheckCoversCallsAndSessions(t *testing.T) {
+	hanzo := Principal{Org: "hanzo", Kind: Programs, Name: "hanzo-ai"}
+	st := newStore(map[string]string{
+		orgRef(hanzo, "dummy", "default"):     "sk-platform",
+		orgRef(hanzo, "analytics", "default"): "postgres://reader:pw@db.example:5432/facts",
+	})
+	s, key := serving(t, st, 1000)
+	gateway, other := program(t, key, "hanzo-ai", "hanzo"), program(t, key, "hanzo-chat", "hanzo")
+	person := token(t, key, func(c *jwt.Claims) { c.Owner, c.Subject = "hanzo", "u-9" })
+
+	for name, bearer := range map[string]string{"the gateway, unlisted": gateway, "another program": other, "a person": person} {
+		_, body := ask(t, s, http.MethodPost, "/v1/call", bearer, call())
+		if strings.Contains(body, "event: meter") || strings.Contains(body, "sk-platform") {
+			t.Errorf("%s spent the platform's model key: %s", name, body)
+		}
+	}
+
+	s.cfg.Platform = map[string]string{"dummy/default": ""}
+	s.cfg.Callers = map[string][]string{"dummy/default": {"hanzo-ai"}}
+	if _, body := ask(t, s, http.MethodPost, "/v1/call", gateway, call()); !strings.Contains(body, "event: meter") {
+		t.Fatalf("the listed gateway was refused the platform's model key: %s", body)
+	}
+	for name, bearer := range map[string]string{"another program": other, "a person": person} {
+		if _, body := ask(t, s, http.MethodPost, "/v1/call", bearer, call()); strings.Contains(body, "event: meter") {
+			t.Errorf("%s spent the platform's model key once it was listed for the gateway: %s", name, body)
+		}
+	}
+
+	// A session's custody origin is one coordinate, <base>/default.
+	for name, p := range map[string]Principal{
+		"another program": {Org: "hanzo", Kind: Programs, Name: "hanzo-chat"},
+		"a person":        {Org: "hanzo", Kind: Persons, Name: "u-9"},
+	} {
+		if _, _, err := s.origin(context.Background(), p, "analytics"); err == nil {
+			t.Errorf("%s opened a session with the platform's database credential", name)
+		}
+	}
+	s.cfg.Platform["analytics/default"] = ""
+	s.cfg.Callers["analytics/default"] = []string{"hanzo-ai"}
+	if _, scope, err := s.origin(context.Background(), hanzo, "analytics"); err != nil || scope != ScopeOrg {
+		t.Fatalf("the listed caller's session = %q, %v", scope, err)
+	}
+	if _, _, err := s.origin(context.Background(), Principal{Org: "hanzo", Kind: Programs, Name: "hanzo-chat"}, "analytics"); err == nil {
+		t.Error("an unlisted program opened a session with the platform's database credential")
+	}
+	// A tenant's own org still shares its own credentials.
+	acme := Principal{Org: "acme", Kind: Persons, Name: "u-7"}
+	st.held[orgRef(acme, "analytics", "default")] = "postgres://r:pw@db.example:5432/x"
+	if _, scope, err := s.origin(context.Background(), acme, "analytics"); err != nil || scope != ScopeOrg {
+		t.Fatalf("a tenant's own org credential = %q, %v", scope, err)
+	}
+}

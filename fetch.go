@@ -183,12 +183,14 @@ func (s *Server) fetch(ctx context.Context, in *spend.Fetch) (*spend.Fetched, er
 	return got, nil
 }
 
-// shares reports whether p's fetch may fall through to its org's shared cloud
-// account under label. A tenant's principals share their own org's accounts. The
+// shares reports whether p may fall through from its own custody to its org's
+// shared credential for provider and label — a cloud account, a model key, a
+// database. A tenant's principals share their own org's credentials. The
 // platform's own org is where every Hanzo program and person is filed, and a
-// label is whatever the caller names, so there the shared account is spent only
-// for a label the configuration lists as a platform account, and only by a
+// label is whatever the caller names, so there the shared credential is spent
+// only for a label the configuration lists as a platform account, and only by a
 // program named as its caller — never a person, never another program of the org.
+// A fetch, a model call and a session all ask this, so there is one rule.
 func (s *Server) shares(p Principal, provider, label string) bool {
 	if p.Org != s.cfg.KMSOrg {
 		return true
