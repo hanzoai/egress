@@ -33,6 +33,7 @@ import (
 // The hosted account, as the operator filed it.
 const (
 	ec2Host     = "ec2.us-east-1.amazonaws.com"
+	cwHost      = "monitoring.us-east-1.amazonaws.com"
 	stsHost     = "sts.us-east-1.amazonaws.com"
 	iamHost     = "hanzo.id"
 	hostedRole  = "arn:aws:iam::532217001883:role/hanzo-compute"
@@ -166,6 +167,20 @@ func (f *fakeAWS) serve(w http.ResponseWriter, r *http.Request) {
 		f.keys[id] = key
 		_, _ = fmt.Fprintf(w, `<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/"><AssumeRoleWithWebIdentityResult><Credentials><AccessKeyId>%s</AccessKeyId><SecretAccessKey>%s</SecretAccessKey><SessionToken>%s</SessionToken><Expiration>%s</Expiration></Credentials><SubjectFromWebIdentityToken>admin/hanzo-egress</SubjectFromWebIdentityToken><AssumedRoleUser><Arn>%s/%s</Arn><AssumedRoleId>AROA:%s</AssumedRoleId></AssumedRoleUser></AssumeRoleWithWebIdentityResult><ResponseMetadata><RequestId>sts-1</RequestId></ResponseMetadata></AssumeRoleWithWebIdentityResponse>`,
 			id, key.secret, key.session, key.until.Format(time.RFC3339), hostedRole, hostedLabel, hostedLabel)
+
+	case cwHost:
+		id, scope, err := verify(r, body, func(id string) (string, bool) {
+			k, ok := f.keys[id]
+			return k.secret, ok
+		})
+		call.keyID, call.scope = id, scope
+		w.Header().Set("Content-Type", "text/xml")
+		if err != nil || scope != "us-east-1/monitoring" || f.keys[id].session != call.token {
+			call.failed = fmt.Sprint("cloudwatch refused: ", err, " ", scope)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = fmt.Fprint(w, `<GetMetricDataResponse xmlns="http://monitoring.amazonaws.com/doc/2010-08-01/"><GetMetricDataResult><MetricDataResults><member><Id>m0</Id><StatusCode>Complete</StatusCode><Timestamps><member>2026-07-02T15:00:00Z</member></Timestamps><Values><member>1073741824.0</member></Values></member></MetricDataResults></GetMetricDataResult></GetMetricDataResponse>`)
 
 	case ec2Host:
 		id, scope, err := verify(r, body, func(id string) (string, bool) {
@@ -362,7 +377,7 @@ func (l *logged) String() string {
 func awsServing(t *testing.T, st Secrets) (*Server, jwt.Key, *fakeAWS, *logged) {
 	t.Helper()
 	s, key := servingOver(t, st, 1000, func(c *Config) {
-		c.AWS = []string{ec2Host}
+		c.AWS = []string{ec2Host, cwHost}
 		c.IAM = "https://" + iamHost
 		c.ClientID = egressID
 		c.Platform = map[string]string{"aws/" + hostedLabel: "532217001883"}
@@ -378,7 +393,7 @@ func awsServing(t *testing.T, st Secrets) (*Server, jwt.Key, *fakeAWS, *logged) 
 	target := f.server.Listener.Addr().String()
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		switch addr {
-		case iamHost + ":443", stsHost + ":443", ec2Host + ":443":
+		case iamHost + ":443", stsHost + ":443", ec2Host + ":443", cwHost + ":443":
 			return (&net.Dialer{}).DialContext(ctx, network, target)
 		}
 		return nil, fmt.Errorf("a test tried to reach %s", addr)
@@ -1003,5 +1018,29 @@ func TestTheCallerCheckCoversCallsAndSessions(t *testing.T) {
 	st.held[orgRef(acme, "analytics", "default")] = "postgres://r:pw@db.example:5432/x"
 	if _, scope, err := s.origin(context.Background(), acme, "analytics"); err != nil || scope != ScopeOrg {
 		t.Fatalf("a tenant's own org credential = %q, %v", scope, err)
+	}
+}
+
+// CloudWatch is signed for as `monitoring`, the service its host names, with the
+// platform role's credentials: the metrics hosted compute meters transfer by.
+func TestCloudWatchIsSignedForAsMonitoring(t *testing.T) {
+	st := newStore(map[string]string{accountRef(hostedLabel): roleDescriptor})
+	s, key, f, logs := awsServing(t, st)
+	in := spend.Fetch{
+		Provider: "AWS", Label: hostedLabel, Method: http.MethodPost, Path: "/",
+		Raw:  []byte("Action=GetMetricData&Version=2010-08-01&MetricDataQueries.member.1.Id=m0"),
+		Type: "application/x-www-form-urlencoded; charset=utf-8",
+		Host: cwHost,
+	}
+	code, body, out := fetchedAs(t, s, computeToken(t, key), in)
+	if code != http.StatusOK || out.Status != http.StatusOK || !bytes.Contains(out.Raw, []byte("<GetMetricDataResponse")) {
+		t.Fatalf("code %d body %s", code, body)
+	}
+	if calls := f.seen(cwHost); len(calls) != 1 || calls[0].failed != "" || calls[0].scope != "us-east-1/monitoring" {
+		t.Fatalf("CloudWatch calls = %+v", calls)
+	}
+	clean(t, f, body, logs.String())
+	if !strings.Contains(logs.String(), `"action":"GetMetricData"`) {
+		t.Errorf("the spend was not recorded with its action:\n%s", logs)
 	}
 }

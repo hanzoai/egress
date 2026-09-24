@@ -77,9 +77,13 @@ var endpointForm = regexp.MustCompile(`^([a-z][a-z0-9]*)\.([a-z]{2}(?:-[a-z]+)+-
 // endpoints — and handing that body back would hand the caller the role. Egress
 // reaches STS itself, for its own exchange, and never on a caller's behalf.
 // Adding a service is one line, written by whoever checked that nothing it
-// answers is a credential.
+// answers is a credential; the role egress assumes should grant each one no more
+// than its caller needs.
 var signable = map[string]bool{
 	"ec2": true,
+	// CloudWatch, for the metrics hosted compute meters by: GetMetricData
+	// answers with datapoints.
+	"monitoring": true,
 }
 
 // endpointOf reads the signing scope out of an endpoint's name, for a service
