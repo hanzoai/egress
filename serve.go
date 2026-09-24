@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +42,12 @@ type Server struct {
 	// roots is what a database that is not ours proves itself against. Nil is
 	// this host's own trust store, which is the only value that ships.
 	roots *x509.CertPool
+	// amazon is the AWS endpoints this host signs for, by host.
+	amazon map[string]endpoint
+	// self is this service's own IAM identity, what an AWS role trusts.
+	self *self
+	// roles holds what assumed roles bought, until shortly before it expires.
+	roles roles
 }
 
 // New builds the service over a credential store. It refuses an incoherent
@@ -58,6 +65,8 @@ func New(cfg Config, store Secrets, log *slog.Logger) (*Server, error) {
 		log:      log,
 		room:     make(chan struct{}, room),
 		lookup:   reachable,
+		amazon:   admitted(cfg.AWS),
+		roles:    roles{held: map[string]*assumed{}},
 	}
 	// The dialects make their provider call through one client hanzoai/ai
 	// keeps as a package variable, and it holds nothing until a process puts
@@ -90,6 +99,14 @@ func New(cfg Config, store Secrets, log *slog.Logger) (*Server, error) {
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
+	}
+	// This service's own identity goes out on the same client, and for the same
+	// reasons: its client secret is on that request.
+	s.self = &self{
+		iam:    strings.TrimRight(cfg.IAM, "/"),
+		id:     cfg.ClientID,
+		secret: func() (string, error) { return sealed("client-secret") },
+		client: s.fetcher,
 	}
 
 	s.app = zip.New(zip.Config{AppName: "egress"})
@@ -245,6 +262,18 @@ func (s *Server) enroll(ctx context.Context, in *Enroll) (*Enrolled, error) {
 	}
 	if in.Key == "" {
 		return nil, zip.ErrBadRequest("key is empty")
+	}
+	// An AWS credential is a key pair. A role is assumed with egress's own
+	// identity, so a role a caller could enrol is a role any caller could have
+	// egress assume; the platform's are the operator's to write.
+	if provider == amazon {
+		d, err := account([]byte(in.Key))
+		if err != nil {
+			return nil, zip.ErrBadRequest(errDescriptor.Error())
+		}
+		if d.RoleArn != "" {
+			return nil, zip.Errorf(http.StatusForbidden, "a role is not enrolled: egress assumes one only from the platform's custody")
+		}
 	}
 	if err := s.custody.enroll(ctx, p, provider, label, in.Key); err != nil {
 		s.log.Warn("enroll failed", "org", p.Org, "name", p.Name, "kind", p.Kind, "provider", provider)

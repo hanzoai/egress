@@ -28,8 +28,9 @@ EnvironmentFile=/etc/egress/env
 # passphrase yields neither. Encrypt it with:
 #   systemd-creds encrypt --with-key=host --name=mnemonic - /etc/egress/mnemonic.cred
 LoadCredentialEncrypted=mnemonic:/etc/egress/mnemonic.cred
-# The http transport's secret, encrypted the same way. Only the one the endpoint
-# selects is read, and a missing one is a refusal rather than a fallback.
+# This service's IAM client secret, encrypted the same way. The https store
+# transport signs in with it, and it buys the web identity an AWS role is assumed
+# with; a missing one is a refusal rather than a fallback.
 LoadCredentialEncrypted=client-secret:/etc/egress/client-secret.cred
 # THE KEY THAT OPENS EVERY PROVIDER CREDENTIAL. Its public half, EGRESS_RECIPIENT
 # in the environment file, seals them, and lives openly wherever it likes —

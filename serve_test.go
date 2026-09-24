@@ -23,6 +23,13 @@ import (
 // test is the one that ships, fetch included.
 func serving(t *testing.T, s *store, rpm int) (*Server, jwt.Key) {
 	t.Helper()
+	return servingOver(t, s, rpm, nil)
+}
+
+// servingOver is serving over any store, with the configuration edited before
+// the server is built from it.
+func servingOver(t *testing.T, s Secrets, rpm int, edit func(*Config)) (*Server, jwt.Key) {
+	t.Helper()
 	key := issuerKey(t)
 	set, err := jwt.BuildJWKS(key)
 	if err != nil {
@@ -33,11 +40,15 @@ func serving(t *testing.T, s *store, rpm int) (*Server, jwt.Key) {
 	}))
 	t.Cleanup(keys.Close)
 
-	server, err := New(Config{
+	cfg := Config{
 		Listen: ":0", Issuer: issuer, JWKS: keys.URL, Audience: audience,
 		KMS: "zap://kms.invalid:9999", KMSOrg: "hanzo", KMSPath: "hanzo/egress", Recipient: aRecipient(),
 		RPM: rpm, Deadline: 30 * time.Second,
-	}, s, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}
+	if edit != nil {
+		edit(&cfg)
+	}
+	server, err := New(cfg, s, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

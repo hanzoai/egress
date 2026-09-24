@@ -48,7 +48,7 @@ func main() {
 		log.Error("cannot serve", "error", err.Error())
 		os.Exit(1)
 	}
-	log.Info("serving", "listen", cfg.Listen, "issuer", cfg.Issuer, "kms", cfg.KMS,
+	log.Info("serving", "listen", cfg.Listen, "issuer", cfg.Issuer, "kms", cfg.KMS, "aws", cfg.AWS,
 		"memory", "locked", "memory_encryption", egress.MemoryEncryption())
 	if err := server.Listen(); err != nil {
 		log.Error("stopped", "error", err.Error())

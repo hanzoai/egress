@@ -7,16 +7,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
-
-	"github.com/hanzoai/egress/spend"
-	"github.com/zap-proto/zip"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/hanzoai/egress/spend"
+	"github.com/zap-proto/zip"
 )
 
-// clouds are the clouds egress can spend on, and where each one's API answers.
+// clouds are the clouds egress pays for with a bearer, and where each one's API
+// answers.
 //
 // Where DigitalOcean's API lives is a fact about DigitalOcean, not a choice this
 // deployment makes, so it is stated here once rather than typed into every host's
@@ -25,12 +28,10 @@ import (
 // way. It is the same shape as a model dialect, which carries its vendor's
 // endpoint and is asked for a fallback only when a deployment overrides one.
 //
-// Membership is also the allowlist. A cloud here carries its credential as a
-// bearer token; a cloud that signs its requests instead — AWS, and anything else
-// on SigV4 — cannot be served by attaching a header, so it is absent and refused
-// rather than sent upstream with a header it will reject. Adding a cloud is
-// therefore one line written by someone who worked out both halves, and there is
-// no second table to agree with.
+// Membership is also the allowlist for a bearer. AWS is absent because it does
+// not take one: its API is one host per service and region, a request is signed
+// rather than carrying its credential, and the endpoints egress signs for are
+// this host's -aws list (aws.go). Every other cloud is refused.
 var clouds = map[string]string{
 	"digitalocean": "https://api.digitalocean.com",
 	"hetzner":      "https://api.hetzner.cloud",
@@ -95,18 +96,62 @@ func (s *Server) fetch(ctx context.Context, in *spend.Fetch) (*spend.Fetched, er
 	if !verbs[method] {
 		return nil, zip.ErrBadRequest("method is not one a cloud API uses")
 	}
-	api, ok := s.upstream(clouds, provider)
-	if !ok {
-		return nil, zip.ErrBadRequest(ErrNotCarried.Error())
-	}
-	target, err := reference(api, in.Path)
+	out, err := outbound(method, in)
 	if err != nil {
 		return nil, zip.ErrBadRequest(err.Error())
 	}
 
-	key, scope, err := s.custody.resolve(ctx, p, provider, label)
+	// Where the request goes is decided here and nowhere else: for a bearer
+	// cloud from the one table, for AWS from the endpoints this host admits.
+	var at endpoint
+	var base string
+	if provider == amazon {
+		at, ok = s.amazon[strings.ToLower(in.Host)]
+		if !ok {
+			return nil, zip.ErrBadRequest("egress does not sign for that AWS endpoint")
+		}
+		base = "https://" + at.host
+	} else {
+		if in.Host != "" {
+			return nil, zip.ErrBadRequest("a host is named only for an AWS endpoint")
+		}
+		base, ok = s.upstream(clouds, provider)
+		if !ok {
+			return nil, zip.ErrBadRequest(ErrNotCarried.Error())
+		}
+		if !out.raw {
+			out.accept = "application/json"
+		}
+	}
+	target, err := reference(base, in.Path)
 	if err != nil {
-		return nil, err
+		return nil, zip.ErrBadRequest(err.Error())
+	}
+
+	// The credential, and how it goes on the request. Neither leaves this call.
+	var (
+		attach func(*http.Request, []byte) error
+		hidden []string
+		scope  string
+		form   string
+		signer aws.Credentials
+	)
+	if provider == amazon {
+		d, paid, err := s.resolveAWS(ctx, p, label)
+		if err != nil {
+			return nil, err
+		}
+		signer, err = s.credentials(ctx, p, label, d, at)
+		if err != nil {
+			return nil, err
+		}
+		attach, hidden, scope, form = signed(signer, at), secrets(signer), paid, d.form()
+	} else {
+		key, paid, err := s.custody.resolve(ctx, p, provider, label)
+		if err != nil {
+			return nil, err
+		}
+		attach, hidden, scope = authorize(key), []string{key}, paid
 	}
 
 	breaker := s.breaker(provider)
@@ -115,45 +160,113 @@ func (s *Server) fetch(ctx context.Context, in *spend.Fetch) (*spend.Fetched, er
 	}
 
 	started := time.Now()
-	out, err := s.send(ctx, method, target, key, in.Body)
+	got, err := s.send(ctx, target, out, attach)
+	if err == nil && provider == amazon && (quoted(got.Raw, signer) || quoted(got.Body, signer)) {
+		err = errors.New("egress: the answer quoted the credential, so it is not returned")
+	}
 	breaker.Report(err, 0)
 	if err != nil {
+		err = hide(err, hidden)
 		s.log.Warn("refused",
-			"org", p.Org, "name", p.Name, "kind", p.Kind, "provider", in.Provider,
-			"method", method, "path", in.Path, "error", scrub(err, key).Error())
-		return nil, scrub(err, key)
+			"org", p.Org, "name", p.Name, "kind", p.Kind, "provider", in.Provider, "host", at.host,
+			"method", method, "path", in.Path, "action", action(out.kind, out.body), "error", err.Error())
+		return nil, err
 	}
 
-	out.Scope = scope
-	out.Millis = time.Since(started).Milliseconds()
+	got.Scope = scope
+	got.Millis = time.Since(started).Milliseconds()
 	s.log.Info("spend",
 		"org", p.Org, "name", p.Name, "kind", p.Kind, "provider", in.Provider, "scope", scope,
-		"method", method, "path", in.Path, "status", out.Status, "millis", out.Millis)
+		"form", form, "host", at.host, "method", method, "path", in.Path,
+		"action", action(out.kind, out.body), "status", got.Status, "millis", got.Millis)
+	return got, nil
+}
+
+// request is one upstream request as egress will send it, less where it goes
+// and the credential.
+type request struct {
+	method string
+	body   []byte
+	kind   string // the body's Content-Type
+	accept string // the Accept header, when egress states one
+	raw    bool   // the caller described the body as bytes, and reads the answer so
+}
+
+// outbound checks what a caller described and turns it into a request. A body
+// arrives as JSON (Body) or as bytes with their Content-Type (Raw, Type), never
+// both, and a Type describes a Raw and nothing else.
+func outbound(method string, in *spend.Fetch) (request, error) {
+	out := request{method: method}
+	json := present(in.Body)
+	switch {
+	case json && len(in.Raw) > 0:
+		return out, errors.New("a fetch carries body or raw, not both")
+	case in.Type != "" && len(in.Raw) == 0:
+		return out, errors.New("type describes a raw body, and there is none")
+	case len(in.Raw) > 0:
+		if len(in.Type) > 256 {
+			return out, errors.New("type is not a content type")
+		}
+		if _, _, err := mime.ParseMediaType(in.Type); err != nil {
+			return out, errors.New("type is not a content type")
+		}
+		out.body, out.kind, out.raw = in.Raw, in.Type, true
+	case json:
+		out.body, out.kind = in.Body, "application/json"
+	}
 	return out, nil
 }
 
-// send makes the upstream request. The credential exists only inside this
-// function and on the request it builds; it is not returned, not logged, and
-// scrubbed out of anything that is.
-func (s *Server) send(ctx context.Context, method, target, key string, sent []byte) (*spend.Fetched, error) {
+// present reports whether a JSON body says anything. An absent body arrives as
+// the literal null, and a request with no body must not be sent one.
+func present(b json.RawMessage) bool {
+	t := bytes.TrimSpace(b)
+	return len(t) > 0 && !bytes.Equal(t, []byte("null"))
+}
+
+// authorize puts a key on a request as the bearer every cloud in `clouds` takes.
+func authorize(key string) func(*http.Request, []byte) error {
+	return func(r *http.Request, _ []byte) error {
+		r.Header.Set("Authorization", "Bearer "+key)
+		return nil
+	}
+}
+
+// hide takes every credential out of an error, in each form a provider might
+// quote it.
+func hide(err error, hidden []string) error {
+	for _, h := range hidden {
+		err = scrub(err, h)
+	}
+	return err
+}
+
+// send makes the upstream request. The credential exists only inside attach and
+// on the request it signs; it is not returned, not logged, and scrubbed out of
+// anything that is.
+func (s *Server) send(ctx context.Context, target string, out request, attach func(*http.Request, []byte) error) (*spend.Fetched, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.Deadline)
 	defer cancel()
 
 	var payload io.Reader
-	if len(sent) > 0 {
-		payload = bytes.NewReader(sent)
+	if len(out.body) > 0 {
+		payload = bytes.NewReader(out.body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, target, payload)
+	req, err := http.NewRequestWithContext(ctx, out.method, target, payload)
 	if err != nil {
 		return nil, err
 	}
 	// Egress writes every header, and there is no request field that adds one.
 	// The credential is one of them, so a caller able to set headers could
 	// replace it — or send it somewhere else by setting Host.
-	req.Header.Set("Authorization", "Bearer "+key)
-	req.Header.Set("Accept", "application/json")
 	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", out.kind)
+	}
+	if out.accept != "" {
+		req.Header.Set("Accept", out.accept)
+	}
+	if err := attach(req, out.body); err != nil {
+		return nil, err
 	}
 
 	resp, err := s.fetcher.Do(req)
@@ -169,7 +282,33 @@ func (s *Server) send(ctx context.Context, method, target, key string, sent []by
 	if len(read) > mostBody {
 		return nil, fmt.Errorf("egress: answer is larger than %d bytes", mostBody)
 	}
-	return &spend.Fetched{Status: resp.StatusCode, Body: body(read)}, nil
+	return answered(resp.StatusCode, resp.Header.Get("Content-Type"), read, out.raw), nil
+}
+
+// answered is what came back, in the shape the caller asked in. A caller that
+// sent bytes reads bytes. A caller that sent JSON reads JSON in Body exactly as
+// it always has, and an answer that is not JSON also arrives as bytes beside it,
+// so a caller that knows how can read what the cloud really said.
+func answered(status int, kind string, read []byte, raw bool) *spend.Fetched {
+	out := &spend.Fetched{Status: status}
+	if raw {
+		out.Raw, out.Type = read, typed(kind)
+		return out
+	}
+	out.Body = body(read)
+	if t := bytes.TrimSpace(read); len(t) > 0 && !json.Valid(t) {
+		out.Raw, out.Type = read, typed(kind)
+	}
+	return out
+}
+
+// typed is an answer's Content-Type as a caller will be handed it: the cloud's
+// own when it is one, and bytes when it is not.
+func typed(kind string) string {
+	if _, _, err := mime.ParseMediaType(kind); err != nil || len(kind) > 256 {
+		return "application/octet-stream"
+	}
+	return kind
 }
 
 // body makes what came back safe to hand a caller expecting JSON. A cloud
