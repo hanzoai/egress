@@ -14,7 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/valyala/fasthttp"
@@ -25,10 +27,11 @@ import (
 //
 // Notice what is absent. There is no org and no user: those come from the
 // verified token, because a caller that could name a tenant could spend another
-// tenant's key. There is no host: that comes from the egress host's own
-// configuration, because a caller that could name the far end could have the
-// credential delivered to it. And there are no headers, because a caller that
-// could write a header could write the one carrying the credential.
+// tenant's key. There is no free choice of host: a cloud that takes a bearer
+// answers at one address egress already knows, and an AWS endpoint is only
+// selected from the ones the egress host admits (see Host). And there are no
+// headers, because a caller that could write a header could write the one
+// carrying the credential.
 type Fetch struct {
 	// Provider is the cloud, spelled as the estate spells it: "DigitalOcean",
 	// "Hetzner". It selects the credential and the upstream, so a key enrolled
@@ -43,9 +46,24 @@ type Fetch struct {
 	// Path is the request path, query included: "/v2/droplets?page=2". It is a
 	// path and never a URL.
 	Path string `json:"path" url:"-" validate:"required"`
-	// Body is the request body, and it is JSON because every cloud API egress
-	// carries speaks JSON.
+	// Body is a JSON request body. A request whose body is JSON, or that has
+	// none, is described exactly as it always has been.
 	Body json.RawMessage `json:"body" url:"-"`
+	// Raw is a request body that is not JSON, as bytes: EC2's Query API posts a
+	// form. A Fetch carries Body or Raw, never both, and Raw always travels with
+	// Type.
+	Raw []byte `json:"raw,omitempty" url:"-"`
+	// Type is Raw's Content-Type, sent upstream as written.
+	Type string `json:"type,omitempty" url:"-"`
+	// Host is the AWS endpoint the request was addressed to, such as
+	// "ec2.us-east-1.amazonaws.com". An AWS API answers at one host per service
+	// and region, so which one is part of the request, and its service and region
+	// are what egress scopes the signature to. It SELECTS and never supplies:
+	// egress refuses a host its own configuration does not list, and it never
+	// sends a credential anywhere, because SigV4 sends a signature and keeps the
+	// key. It is empty for every other cloud, whose one address egress
+	// already knows.
+	Host string `json:"host,omitempty" url:"-"`
 }
 
 // Fetched is what the upstream answered: its status, and its body.
@@ -54,11 +72,18 @@ type Fetch struct {
 // about the caller's request, not a failure of egress, and flattening the two
 // would leave a caller unable to tell "your cluster is gone" from "the credential
 // store is down" — which are opposite instructions.
+//
+// A JSON answer arrives in Body. An answer carried as bytes arrives in Raw with
+// its Content-Type in Type: every answer to a Fetch that carried Raw, and any
+// answer that is not JSON. Type is set whenever Raw is meant, so an empty Raw
+// with a Type is an empty answer and not a missing one.
 type Fetched struct {
 	Status int             `json:"status"`
 	Body   json.RawMessage `json:"body"`
 	Scope  string          `json:"scope"`
 	Millis int64           `json:"millis"`
+	Raw    []byte          `json:"raw,omitempty"`
+	Type   string          `json:"type,omitempty"`
 }
 
 // Config is what a caller needs to reach egress for one cloud account.
@@ -93,7 +118,14 @@ type Config struct {
 // The request's host is discarded, which is worth saying out loud. An SDK builds
 // a full URL from a base it was configured with; only the path and query travel,
 // and egress decides the host from its own configuration. Configure the SDK's
-// base URL to whatever it likes.
+// base URL to whatever it likes. AWS is the one exception: its host names the
+// service and region, so it travels as Fetch.Host, and egress refuses it unless
+// its own configuration admits that endpoint.
+//
+// A JSON body travels as JSON and any other body as bytes with its
+// Content-Type, so an SDK that posts a form (EC2) or reads XML back works
+// unchanged. Hand an AWS SDK anonymous credentials: it signs nothing, and
+// egress signs the request it sends.
 func Client(cfg Config) *http.Client {
 	deadline := cfg.Deadline
 	if deadline <= 0 {
@@ -119,17 +151,11 @@ type carrier struct {
 var ErrRefused = errors.New("egress refused the call")
 
 func (c *carrier) RoundTrip(r *http.Request) (*http.Response, error) {
-	body, err := payload(r)
+	in, err := describe(c.cfg, r)
 	if err != nil {
 		return nil, err
 	}
-	asked, err := json.Marshal(Fetch{
-		Provider: c.cfg.Provider,
-		Label:    c.cfg.Account,
-		Method:   r.Method,
-		Path:     r.URL.RequestURI(),
-		Body:     body,
-	})
+	asked, err := json.Marshal(in)
 	if err != nil {
 		return nil, err
 	}
@@ -157,40 +183,82 @@ func (c *carrier) RoundTrip(r *http.Request) (*http.Response, error) {
 	return answer(r, out), nil
 }
 
-// payload reads the request body, which must be JSON. A cloud API egress
-// carries speaks JSON, so anything else is a caller building a request egress
-// cannot describe — said here, where the SDK call site is still in view, rather
-// than as a refusal from the far end.
-func payload(r *http.Request) (json.RawMessage, error) {
+// describe turns an outbound request into the Fetch that asks egress to make it.
+//
+// A body that is JSON and says so — or says nothing — travels as Body, which is
+// the Fetch every JSON cloud has always sent. Any other body travels as Raw with
+// its own Content-Type, byte for byte.
+func describe(cfg Config, r *http.Request) (Fetch, error) {
+	in := Fetch{
+		Provider: cfg.Provider,
+		Label:    cfg.Account,
+		Method:   r.Method,
+		Path:     r.URL.RequestURI(),
+	}
+	if addressed(cfg.Provider) {
+		in.Host = strings.ToLower(r.URL.Hostname())
+	}
+	read, err := payload(r)
+	if err != nil || len(read) == 0 {
+		return in, err
+	}
+	kind := r.Header.Get("Content-Type")
+	if plainJSON(kind) && json.Valid(read) {
+		in.Body = read
+		return in, nil
+	}
+	if plainJSON(kind) && len(bytes.TrimSpace(read)) == 0 {
+		return in, nil
+	}
+	if kind == "" {
+		kind = "application/octet-stream"
+	}
+	in.Raw, in.Type = read, kind
+	return in, nil
+}
+
+// addressed reports whether a provider's API answers at one host per service
+// and region, so that the host an SDK addressed is part of what it asked. AWS
+// is the one such cloud egress carries.
+func addressed(provider string) bool {
+	return strings.EqualFold(strings.TrimSpace(provider), "aws")
+}
+
+// plainJSON reports whether a Content-Type describes a body as JSON, or does not
+// describe it at all — the two cases a JSON cloud's SDK produces.
+func plainJSON(kind string) bool {
+	if kind == "" {
+		return true
+	}
+	media, _, err := mime.ParseMediaType(kind)
+	return err == nil && media == "application/json"
+}
+
+// payload reads the request body.
+func payload(r *http.Request) ([]byte, error) {
 	if r.Body == nil {
 		return nil, nil
 	}
 	read, err := io.ReadAll(r.Body)
 	_ = r.Body.Close()
-	if err != nil {
-		return nil, err
-	}
-	if len(bytes.TrimSpace(read)) == 0 {
-		return nil, nil
-	}
-	if !json.Valid(read) {
-		return nil, errors.New("egress carries JSON, and this request body is not JSON")
-	}
-	return read, nil
+	return read, err
 }
 
 // answer rebuilds what the SDK expects to receive. The status and body are the
 // cloud's own, so an SDK reads its own errors and its own pagination out of them
 // exactly as it would have.
 func answer(r *http.Request, out Fetched) *http.Response {
-	read := []byte(out.Body)
+	read, kind := []byte(out.Body), "application/json"
+	if out.Type != "" {
+		read, kind = out.Raw, out.Type
+	}
 	return &http.Response{
 		Status:        http.StatusText(out.Status),
 		StatusCode:    out.Status,
 		Proto:         "HTTP/1.1",
 		ProtoMajor:    1,
 		ProtoMinor:    1,
-		Header:        http.Header{"Content-Type": []string{"application/json"}},
+		Header:        http.Header{"Content-Type": []string{kind}},
 		Body:          io.NopCloser(bytes.NewReader(read)),
 		ContentLength: int64(len(read)),
 		Request:       r,

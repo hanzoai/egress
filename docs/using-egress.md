@@ -38,9 +38,28 @@ hc := spend.Client(spend.Config{
 })
 ```
 
-The request's host is discarded: only the method, path, query, headers and body
-travel. Egress decides which upstream that is from `Provider`, because an address
-is not what makes an upstream payable.
+The request's host is discarded: only the method, path, query and body travel
+(a JSON body as JSON, any other body as bytes with its Content-Type). Egress
+decides which upstream that is from `Provider`, because an address is not what
+makes an upstream payable.
+
+AWS is the one cloud whose API is a host per service and region, so for
+`Provider: "AWS"` the host the SDK addressed travels too, and egress signs
+(SigV4) only for the endpoints its `EGRESS_AWS` list admits. Give the SDK
+anonymous credentials so it signs nothing itself; the answer comes back as the
+bytes and Content-Type AWS sent, so the SDK reads its own XML:
+
+```go
+hc := spend.Client(spend.Config{Address: "egress.hanzo.svc:9653", Token: token,
+    Provider: "AWS", Account: "hanzo-compute"})
+api := ec2.New(ec2.Options{Region: "us-east-1", HTTPClient: hc,
+    Credentials: aws.AnonymousCredentials{}})
+```
+
+The account is a descriptor in custody: `{"roleArn":…}`, which egress assumes
+with its own IAM identity, or `{"accessKeyId":…,"secretAccessKey":…}`, sealed.
+A caller may enrol a key pair for itself; a role only the operator files, at
+`cloud/aws/<label>/credential` in the platform's KMS org.
 
 ## Reaching a database
 

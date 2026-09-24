@@ -89,8 +89,8 @@ func (e *envelope) GetSecret(ctx context.Context, ref string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	var sec kms.Secret
-	if err := json.Unmarshal(raw, &sec); err != nil || sec.Scheme == "" {
+	sec, ok := record(raw)
+	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotSealed, ref)
 	}
 	// THE COORDINATE MUST COME FROM WHERE THE RECORD WAS FOUND, not from inside
@@ -103,7 +103,25 @@ func (e *envelope) GetSecret(ctx context.Context, ref string) ([]byte, error) {
 	if sec.Path != path || sec.Name != name || sec.Env != sealEnv {
 		return nil, fmt.Errorf("egress: the record at %s was sealed for %s/%s@%s", ref, sec.Path, sec.Name, sec.Env)
 	}
-	return kms.OpenWith(e.identity, &sec)
+	return kms.OpenWith(e.identity, sec)
+}
+
+// GetUnsealed returns what the store holds at ref without opening it: the
+// sealed record itself, or a value an operator wrote in the clear. It exists for
+// one kind of value, a record that holds no secret — an AWS role names an
+// account and grants nothing by itself — and its one reader spends nothing it
+// returns until it has checked the value is that kind.
+func (e *envelope) GetUnsealed(ctx context.Context, ref string) ([]byte, error) {
+	return e.in.GetSecret(ctx, ref)
+}
+
+// record reads raw as a sealed record, and reports whether it is one.
+func record(raw []byte) (*kms.Secret, bool) {
+	var sec kms.Secret
+	if err := json.Unmarshal(raw, &sec); err != nil || sec.Scheme == "" {
+		return nil, false
+	}
+	return &sec, true
 }
 
 // PutSecret seals a credential and stores the sealed record. What crosses the

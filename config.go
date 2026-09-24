@@ -59,17 +59,25 @@ type Config struct {
 	// one.
 	Recipient string
 
-	// IAM is the identity server the HTTP transport exchanges client
-	// credentials at. Required when KMS is an http(s) endpoint, unused when it
-	// is zap:// — the two transports authenticate differently and the store SDK
-	// takes the same struct for both.
+	// IAM is the identity server this service's own machine identity is
+	// exchanged at: by the HTTP store transport, and for the web identity an AWS
+	// role is assumed with. Required when KMS is an http(s) endpoint or AWS
+	// lists an endpoint.
 	IAM string
 
-	// ClientID names this service's machine identity on the HTTP transport. It
-	// is an identifier, not a secret; the matching secret is held as a
-	// host-encrypted unit credential and never appears here, in the environment,
-	// or in a file this process can be asked to print.
+	// ClientID names this service's machine identity at IAM. It is an
+	// identifier, not a secret; the matching secret is held as a host-encrypted
+	// unit credential and never appears here, in the environment, or in a file
+	// this process can be asked to print. An AWS role that egress assumes trusts
+	// this identity, and nothing a caller holds.
 	ClientID string
+
+	// AWS lists the AWS API endpoints egress signs requests for, by host:
+	// "ec2.us-east-1.amazonaws.com". The service and region a signature is
+	// scoped to are read from the host, so an entry is spelled
+	// <service>.<region>.amazonaws.com and nothing else. A caller's request names
+	// one of these or is refused; empty means egress carries no AWS call at all.
+	AWS []string
 
 	// Postgres is where egress listens for database clients: an absolute path
 	// for a unix socket, or a host:port. Empty — the default — means this host
@@ -141,6 +149,12 @@ func (c *Config) Flags(fs *flag.FlagSet) {
 		}
 	}
 	fs.Var(urls{&c.URLs}, "url", "upstream base URL for one provider, provider=url (repeatable)")
+	for host := range strings.SplitSeq(env("EGRESS_AWS", ""), ",") {
+		if host = strings.TrimSpace(host); host != "" {
+			c.AWS = append(c.AWS, host)
+		}
+	}
+	fs.Var(hosts{&c.AWS}, "aws", "AWS API endpoint egress signs for, <service>.<region>.amazonaws.com (repeatable)")
 }
 
 // Check reports why this configuration cannot be served. It refuses rather than
@@ -182,6 +196,21 @@ func (c *Config) Check() error {
 			return fmt.Errorf("egress: url for %q must be https", provider)
 		}
 	}
+	// An AWS endpoint is signed for by what its name says, so a name that does
+	// not say a service and a region cannot be served, and finding that out at
+	// boot is the point. A role is assumed with this service's own identity,
+	// which means an IAM to exchange it at, over https because the exchange
+	// carries the client secret.
+	for _, host := range c.AWS {
+		if _, ok := endpointOf(host); !ok {
+			return fmt.Errorf("egress: aws endpoint %q is not <service>.<region>.amazonaws.com", host)
+		}
+	}
+	if len(c.AWS) > 0 {
+		if c.ClientID == "" || !strings.HasPrefix(c.IAM, "https://") {
+			return errors.New("egress: aws needs -iam (https) and -client-id: a role is assumed with this service's own identity")
+		}
+	}
 	// A listener takes the same grammar an origin does with one difference: the
 	// host may be empty, because ":5432" means every interface. There is no
 	// dialling equivalent of that, which is why `where` refuses it.
@@ -207,6 +236,19 @@ func (u urls) Set(v string) error {
 		*u.into = map[string]string{}
 	}
 	(*u.into)[strings.TrimSpace(provider)] = strings.TrimSpace(target)
+	return nil
+}
+
+// hosts collects the repeatable -aws flag.
+type hosts struct{ into *[]string }
+
+func (h hosts) String() string { return "" }
+
+func (h hosts) Set(v string) error {
+	if v = strings.TrimSpace(v); v == "" {
+		return errors.New("want <service>.<region>.amazonaws.com")
+	}
+	*h.into = append(*h.into, v)
 	return nil
 }
 

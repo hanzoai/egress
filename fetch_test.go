@@ -172,21 +172,22 @@ func TestAFetchDoesNotFollowARedirect(t *testing.T) {
 }
 
 // A cloud egress cannot pay for is refused, not sent upstream with a header it
-// will reject — and never with one it might accept.
+// will reject — and never with one it might accept. An override naming it does
+// not change that: an address is not what makes a cloud payable.
 func TestAFetchRefusesACloudItCannotCarry(t *testing.T) {
 	s, key := serving(t, newStore(map[string]string{
-		orgRef(alice, "aws", "default"): "AKIA-secret",
+		orgRef(alice, "linode", "default"): "linode-secret",
 	}), 100)
-	s.cfg.URLs = map[string]string{"aws": "https://ec2.amazonaws.com"}
+	s.cfg.URLs = map[string]string{"linode": "https://api.linode.com"}
 
-	code, body := fetched(t, s, key, spend.Fetch{Provider: "AWS", Method: "GET", Path: "/"})
+	code, body := fetched(t, s, key, spend.Fetch{Provider: "Linode", Method: "GET", Path: "/v4/linode/instances"})
 	if code == http.StatusOK {
-		t.Fatalf("AWS was served: %s", body)
+		t.Fatalf("Linode was served: %s", body)
 	}
-	if !strings.Contains(body, "cannot be carried") {
+	if !strings.Contains(body, ErrNotCarried.Error()) {
 		t.Errorf("refusal does not say why: %s", body)
 	}
-	if strings.Contains(body, "AKIA-secret") {
+	if strings.Contains(body, "linode-secret") {
 		t.Fatal("the credential travelled to the caller")
 	}
 }
@@ -209,8 +210,9 @@ func TestACloudsAddressIsKnownWithoutConfiguration(t *testing.T) {
 			t.Errorf("upstream(%q) = %q, %v; want %q", provider, got, ok, want)
 		}
 	}
-	// And membership is the allowlist: a cloud egress cannot pay for has no
-	// address here either, so there is one table and not two to disagree.
+	// And membership is the allowlist for a bearer: AWS signs its requests, so
+	// it has no address here — its endpoints are the -aws list, one per service
+	// and region.
 	if got, ok := s.upstream(clouds, "aws"); ok {
 		t.Errorf("upstream(\"aws\") = %q — AWS signs its requests and cannot be paid with a header", got)
 	}
@@ -252,7 +254,7 @@ func TestAFetchWithNoCredentialIsRefused(t *testing.T) {
 func TestAFetchSpendsTheTenantsOwnKeyWhenThereIsOne(t *testing.T) {
 	s, key := serving(t, newStore(map[string]string{
 		ownRef(alice, "digitalocean", "default"): "dop_theirs",
-		orgRef(alice, "digitalocean", "default"):  "dop_ours",
+		orgRef(alice, "digitalocean", "default"): "dop_ours",
 	}), 100)
 
 	var saw string
@@ -354,6 +356,76 @@ func TestAnAnswerThatIsNotJSONStillLeavesAsJSON(t *testing.T) {
 	}
 	if !strings.Contains(text, "Bad Gateway") {
 		t.Errorf("what the cloud said was lost: %q", text)
+	}
+	// Beside it, for a caller that reads bytes, the answer as it came.
+	if string(out.Raw) != "<html>502 Bad Gateway</html>" || out.Type == "" {
+		t.Errorf("raw = %q type = %q", out.Raw, out.Type)
+	}
+}
+
+// A JSON answer to a JSON call leaves exactly as it always has: no field the
+// AWS path added appears on it.
+func TestAJSONAnswerIsUnchanged(t *testing.T) {
+	s, key := serving(t, newStore(map[string]string{
+		orgRef(alice, "digitalocean", "default"): "dop_v1_secret",
+	}), 100)
+	upstream(t, s, "digitalocean", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"droplets":[]}`))
+	})
+	_, body := fetched(t, s, key, spend.Fetch{Provider: "DigitalOcean", Method: "GET", Path: "/v2/droplets"})
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &keys); err != nil {
+		t.Fatal(err)
+	}
+	for k := range keys {
+		switch k {
+		case "status", "body", "scope", "millis":
+		default:
+			t.Errorf("a JSON answer grew %q: %s", k, body)
+		}
+	}
+}
+
+// A call with no body sends none. An absent body arrives as the JSON literal
+// null, and that is not a body to post to a cloud.
+func TestAFetchWithNoBodySendsNone(t *testing.T) {
+	s, key := serving(t, newStore(map[string]string{
+		orgRef(alice, "digitalocean", "default"): "dop_v1_secret",
+	}), 100)
+	var length int64 = -2
+	var kind string
+	upstream(t, s, "digitalocean", func(w http.ResponseWriter, r *http.Request) {
+		length, kind = r.ContentLength, r.Header.Get("Content-Type")
+		_, _ = w.Write([]byte(`{}`))
+	})
+	if code, body := fetched(t, s, key, spend.Fetch{Provider: "DigitalOcean", Method: "GET", Path: "/v2/droplets"}); code != http.StatusOK {
+		t.Fatalf("code = %d %s", code, body)
+	}
+	if length != 0 || kind != "" {
+		t.Errorf("a GET with no body was sent %d bytes as %q", length, kind)
+	}
+}
+
+// Body and Raw are two descriptions of one thing, so a fetch carries one; and a
+// Type describes a Raw.
+func TestAFetchCarriesBodyOrRawNotBoth(t *testing.T) {
+	s, key := serving(t, newStore(map[string]string{
+		orgRef(alice, "digitalocean", "default"): "dop_v1_secret",
+	}), 100)
+	upstream(t, s, "digitalocean", func(http.ResponseWriter, *http.Request) {
+		t.Error("an upstream call was made for a fetch that does not say what it sends")
+	})
+	for name, in := range map[string]spend.Fetch{
+		"both":         {Body: json.RawMessage(`{"a":1}`), Raw: []byte("a=1"), Type: "application/x-www-form-urlencoded"},
+		"raw, no type": {Raw: []byte("a=1")},
+		"type, no raw": {Type: "text/plain"},
+		"bad type":     {Raw: []byte("a=1"), Type: "text/plain\r\nX-Evil: 1"},
+	} {
+		in.Provider, in.Method, in.Path = "DigitalOcean", "POST", "/v2/droplets"
+		if code, body := fetched(t, s, key, in); code == http.StatusOK {
+			t.Errorf("%s was served: %s", name, body)
+		}
 	}
 }
 

@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -142,6 +143,39 @@ func (c *custody) resolve(ctx context.Context, p Principal, provider, label stri
 		return shared, ScopeOrg, nil
 	}
 	return "", "", ErrNoCredential
+}
+
+// unsealer is a store that can also return a value without opening it. The
+// envelope is one; a store with no seal in front of it answers the same through
+// GetSecret.
+type unsealer interface {
+	GetUnsealed(ctx context.Context, ref string) ([]byte, error)
+}
+
+// unsealed returns what is held at ref without opening it, nil when there is
+// nothing. Its one reader is the platform's AWS account, whose role descriptor
+// holds no secret and is written in the clear; see aws.go for what it checks
+// before anything read here is spent.
+func (c *custody) unsealed(ctx context.Context, ref string) ([]byte, error) {
+	var (
+		raw []byte
+		err error
+	)
+	if u, ok := c.store.(unsealer); ok {
+		raw, err = u.GetUnsealed(ctx, ref)
+	} else {
+		raw, err = c.store.GetSecret(ctx, ref)
+	}
+	if err != nil {
+		if absent(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("egress: read credential: %w", err)
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
+	}
+	return bytes.TrimSpace(raw), nil
 }
 
 // enroll seals a customer's own key. It is write-only: nothing in this package
