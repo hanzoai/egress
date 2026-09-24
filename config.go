@@ -95,7 +95,8 @@ type Config struct {
 	// AWS lists the AWS API endpoints egress signs requests for, by host:
 	// "ec2.us-east-1.amazonaws.com". The service and region a signature is
 	// scoped to are read from the host, so an entry is spelled
-	// <service>.<region>.amazonaws.com and nothing else. A caller's request names
+	// <service>.<region>.amazonaws.com and nothing else, and the service is one
+	// egress signs for (`signable`: no identity service, ever). A caller's request names
 	// one of these or is refused; empty means egress carries no AWS call at all.
 	AWS []string
 
@@ -241,7 +242,7 @@ func (c *Config) Check() error {
 	// carries the client secret.
 	for _, host := range c.AWS {
 		if _, ok := endpointOf(host); !ok {
-			return fmt.Errorf("egress: aws endpoint %q is not <service>.<region>.amazonaws.com", host)
+			return fmt.Errorf("egress: aws endpoint %q is not <service>.<region>.amazonaws.com for a service egress signs for", host)
 		}
 	}
 	if len(c.AWS) > 0 {
