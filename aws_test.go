@@ -828,3 +828,26 @@ func TestAnAWSCallThroughSpendComesBackAsAWSAnsweredIt(t *testing.T) {
 	}
 	clean(t, f, string(read))
 }
+
+// Egress never answers to its own identity. The token it shows STS carries the
+// audience it accepts, so a copy of one presented here is refused before
+// anything is read — on a route and on a session alike.
+func TestEgressOwnTokenIsNotACaller(t *testing.T) {
+	st := newStore(map[string]string{accountRef(hostedLabel): roleDescriptor})
+	s, key, f, _ := awsServing(t, st)
+	own := program(t, key, egressID, "hanzo")
+
+	if code, body, _ := fetchedAs(t, s, own, describeInstances()); code != http.StatusUnauthorized {
+		t.Fatalf("egress's own token was served: %d %s", code, body)
+	}
+	if _, err := s.caller(context.Background(), "Bearer "+own); err == nil {
+		t.Fatal("a session would be opened for egress's own token")
+	}
+	if n := len(f.seen("")) + st.count(); n != 0 {
+		t.Fatalf("egress's own token reached custody or AWS %d times", n)
+	}
+	// Another program of the same org is still a caller.
+	if code, body, _ := fetchedAs(t, s, computeToken(t, key), describeInstances()); code != http.StatusOK {
+		t.Fatalf("compute was refused: %d %s", code, body)
+	}
+}

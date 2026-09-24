@@ -119,7 +119,7 @@ func (s *Server) postgres(c net.Conn) {
 	// The password field carries a bearer token, so it is spelled as one and
 	// goes through the one verifier. There is no second one, and no second
 	// thing a caller may present.
-	p, err := s.verify.Verify(ctx, "Bearer "+token)
+	p, err := s.caller(ctx, "Bearer "+token)
 	if err != nil {
 		refuse(c, "28000", "not identified")
 		return

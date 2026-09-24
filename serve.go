@@ -160,12 +160,27 @@ func (s *Server) App() *zip.App { return s.app }
 // anything reads a credential, because an unidentifiable caller has no tenant
 // to spend from and nobody to bill.
 func (s *Server) gate(c *zip.Ctx) error {
-	p, err := s.verify.Verify(c.Context(), c.Header("Authorization"))
+	p, err := s.caller(c.Context(), c.Header("Authorization"))
 	if err != nil {
 		return zip.ErrUnauthorized("not identified")
 	}
 	c.SetContext(with(c.Context(), p))
 	return c.Next()
+}
+
+// caller verifies who is asking. Egress itself is never a caller: its own IAM
+// token is shown to STS as the web identity an AWS role trusts, and it carries
+// the audience this service accepts, so a copy of it arriving here is refused
+// rather than spent — every route and every session reads the caller here.
+func (s *Server) caller(ctx context.Context, authorization string) (Principal, error) {
+	p, err := s.verify.Verify(ctx, authorization)
+	if err != nil {
+		return Principal{}, err
+	}
+	if p.Kind == Programs && s.cfg.ClientID != "" && p.Name == s.cfg.ClientID {
+		return Principal{}, ErrAnonymous
+	}
+	return p, nil
 }
 
 // limit caps how fast one principal may spend. It is keyed on the verified
