@@ -143,7 +143,8 @@ func accountRef(label string) string {
 
 // resolveAWS finds the account a principal spends for label, and which custody
 // paid. A tenant's own sealed key pair wins, as every provider's own key does.
-// Then, for a principal of the platform's own org, the platform's account.
+// Then, for a principal of the platform's own org and a label the configuration
+// lists as a platform account, the platform's account.
 func (s *Server) resolveAWS(ctx context.Context, p Principal, label string) (descriptor, string, error) {
 	own, err := s.custody.read(ctx, ownRef(p, amazon, label))
 	if err != nil {
@@ -160,7 +161,7 @@ func (s *Server) resolveAWS(ctx context.Context, p Principal, label string) (des
 		}
 		return d, ScopeUser, nil
 	}
-	if p.Org != s.cfg.KMSOrg {
+	if p.Org != s.cfg.KMSOrg || !s.shares(p, amazon, label) {
 		return descriptor{}, "", ErrNoCredential
 	}
 	ref := accountRef(label)

@@ -123,11 +123,12 @@ func newCustody(store Secrets) *custody {
 
 // resolve returns the credential to spend for this principal and provider, and
 // which custody paid. The customer's own key wins over the platform's: a tenant
-// that brought a key expects it to be the one spent.
+// that brought a key expects it to be the one spent. The org's shared key is
+// read only when shared says this principal may spend it.
 //
 // It never returns the credential to a caller — only to the call that is about
 // to make an upstream request with it. There is no other reader.
-func (c *custody) resolve(ctx context.Context, p Principal, provider, label string) (string, string, error) {
+func (c *custody) resolve(ctx context.Context, p Principal, provider, label string, shared bool) (string, string, error) {
 	own, err := c.read(ctx, ownRef(p, provider, label))
 	if err != nil {
 		return "", "", err
@@ -135,12 +136,15 @@ func (c *custody) resolve(ctx context.Context, p Principal, provider, label stri
 	if own != "" {
 		return own, ScopeUser, nil
 	}
-	shared, err := c.read(ctx, orgRef(p, provider, label))
+	if !shared {
+		return "", "", ErrNoCredential
+	}
+	org, err := c.read(ctx, orgRef(p, provider, label))
 	if err != nil {
 		return "", "", err
 	}
-	if shared != "" {
-		return shared, ScopeOrg, nil
+	if org != "" {
+		return org, ScopeOrg, nil
 	}
 	return "", "", ErrNoCredential
 }

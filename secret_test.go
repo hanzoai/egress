@@ -129,7 +129,7 @@ func TestTheTenantsOwnKeyOutranksTheSharedOne(t *testing.T) {
 		ownRef(alice, "openai", "default"): "sk-theirs",
 		orgRef(alice, "openai", "default"): "sk-ours",
 	})
-	key, scope, err := newCustody(s).resolve(context.Background(), alice, "openai", "default")
+	key, scope, err := newCustody(s).resolve(context.Background(), alice, "openai", "default", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestTheTenantsOwnKeyOutranksTheSharedOne(t *testing.T) {
 
 func TestTheSharedKeyServesATenantThatBroughtNone(t *testing.T) {
 	s := newStore(map[string]string{orgRef(alice, "openai", "default"): "sk-ours"})
-	key, scope, err := newCustody(s).resolve(context.Background(), alice, "openai", "default")
+	key, scope, err := newCustody(s).resolve(context.Background(), alice, "openai", "default", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestAnAbsentCredentialIsRefusedRatherThanFoundElsewhere(t *testing.T) {
 	t.Setenv("OPENAI", "sk-from-the-environment")
 	t.Setenv("openai", "sk-from-the-environment")
 
-	key, scope, err := newCustody(newStore(nil)).resolve(context.Background(), alice, "openai", "default")
+	key, scope, err := newCustody(newStore(nil)).resolve(context.Background(), alice, "openai", "default", true)
 	if !errors.Is(err, ErrNoCredential) {
 		t.Fatalf("err = %v, want ErrNoCredential", err)
 	}
@@ -173,7 +173,7 @@ func TestAStoreThatCannotAnswerEndsTheCall(t *testing.T) {
 	s := newStore(map[string]string{orgRef(alice, "openai", "default"): "sk-ours"})
 	s.fail = errors.New("cek: message authentication failed")
 
-	_, _, err := newCustody(s).resolve(context.Background(), alice, "openai", "default")
+	_, _, err := newCustody(s).resolve(context.Background(), alice, "openai", "default", true)
 	if err == nil {
 		t.Fatal("a broken store served a call")
 	}
@@ -200,7 +200,7 @@ func TestAFaultWordedLikeAnAbsenceDoesNotSpendTheSharedKey(t *testing.T) {
 	s.fail = errors.New("kmsclient: status 500: {\"error\":\"upstream tenant not found\"}")
 	s.failOn = ownRef(alice, "openai", "default")
 
-	key, scope, err := newCustody(s).resolve(context.Background(), alice, "openai", "default")
+	key, scope, err := newCustody(s).resolve(context.Background(), alice, "openai", "default", true)
 	if err == nil {
 		t.Fatalf("a store fault served a call: resolved %s custody", scope)
 	}
@@ -220,7 +220,7 @@ func TestACredentialIsNotKeptBetweenCalls(t *testing.T) {
 	c := newCustody(s)
 
 	for i := 1; i <= 3; i++ {
-		if _, _, err := c.resolve(context.Background(), alice, "openai", "default"); err != nil {
+		if _, _, err := c.resolve(context.Background(), alice, "openai", "default", true); err != nil {
 			t.Fatal(err)
 		}
 		if got := s.count(); got != i {
@@ -233,13 +233,13 @@ func TestEnrollingReplacesWhatWasHeld(t *testing.T) {
 	s := newStore(map[string]string{ownRef(alice, "openai", "default"): "sk-old"})
 	c := newCustody(s)
 
-	if key, _, _ := c.resolve(context.Background(), alice, "openai", "default"); key != "sk-old" {
+	if key, _, _ := c.resolve(context.Background(), alice, "openai", "default", true); key != "sk-old" {
 		t.Fatalf("first resolve = %q", key)
 	}
 	if err := c.enroll(context.Background(), alice, "openai", "default", "sk-new"); err != nil {
 		t.Fatal(err)
 	}
-	key, _, err := c.resolve(context.Background(), alice, "openai", "default")
+	key, _, err := c.resolve(context.Background(), alice, "openai", "default", true)
 	if err != nil {
 		t.Fatal(err)
 	}
