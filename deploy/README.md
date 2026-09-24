@@ -222,28 +222,50 @@ Steps 1-3 are reversible. Step 5 is not, until step 6 completes.
 
 A cloud key cuts more cleanly than a model key, and the reason is step 4 above:
 the relay hardcodes most vendors' endpoints, so repointing a model caller is not
-a URL change. A cloud caller has no such problem. `visor` builds every provider
-client over one `*http.Client` from `service/transport.go`, so pointing it here
-is a transport swap — `service.RegisterCarrier`, wired by `carry()` from
-`egressAddress` + `egressToken`. That seam is the one place, which is exactly
-what step 4 says a clean cut needs.
+a URL change. A cloud caller has no such problem. Compute builds every cloud
+client over one `*http.Client` from `service/transport.go`, carried here by
+`service.RegisterCarrier` once `egressAddress` is set, and with no carrier it
+calls no cloud at all: it has no direct mode and stores no provider key.
 
-What holds the DigitalOcean key today:
+**Hosted compute is Hanzo's AWS account, and egress holds it as a role, not a
+key.** The descriptor at `cloud/aws/hanzo-compute/credential` (org `hanzo`, env
+`default`) is `{"roleArn":"arn:aws:iam::532217001883:role/hanzo-compute"}`, no
+secret in it. Egress assumes that role with its own IAM identity
+(`AssumeRoleWithWebIdentity`, unsigned, an hour at most), keeps the session in
+locked memory, and signs each EC2 and CloudWatch request with it. The role is
+two documents, both here:
 
-| where | what |
+| file | what it says |
 |---|---|
-| KMS `hanzo/prod/visor-config` | `DIGITALOCEAN_ACCESS_TOKEN`, the only source of the value |
-| `KMSSecret hanzo/visor-kms-sync` | syncs it into the Secret every 600s |
-| Secret `hanzo/visor-config` | plaintext to anyone with cluster read |
-| Deployment `hanzo/visor` | reads it as env |
+| [`aws/hanzo-compute.trust.json`](aws/hanzo-compute.trust.json) | who may assume it: the `hanzo.id` OIDC provider, for a token with `aud` `hanzo-egress` and `sub` `admin/hanzo-egress` — egress, and nothing else |
+| [`aws/hanzo-compute.policy.json`](aws/hanzo-compute.policy.json) | what it may do: describe instances and images; launch only from the two compute images into the compute subnet and security group, only instances and volumes tagged `managed-by=hanzo-compute`, tagging only at launch; start, stop and terminate only instances so tagged; read `NetworkOut` (`cloudwatch:GetMetricData`, which has no resource-level scope) |
 
-**A second DigitalOcean credential exists, and it is not this one.**
-`shared-credentials/DO_API_TOKEN` is a DIFFERENT value (different hash) read by
-`bot-gateway`. So the two cut independently — deleting visor's key does not
-break bot-gateway — but the capability has two names, two stores and two
-lifetimes, which is why a rotation misses one and a meter never sees the other.
-Both belong at the same custody path; the second is not a blocker, it is a
-second migration.
+```
+aws iam create-role --role-name hanzo-compute --max-session-duration 3600 \
+  --assume-role-policy-document file://aws/hanzo-compute.trust.json
+aws iam put-role-policy --role-name hanzo-compute --policy-name hanzo-compute \
+  --policy-document file://aws/hanzo-compute.policy.json
+```
+
+The policy names the account's subnet, security group and images by id, so a
+new image is a policy change before it is a config change: compute's
+`computeImage` and `computeGpuImage` must be images the policy lists.
+
+Order:
+
+1. **Serve**, as above, with `EGRESS_AWS`, `EGRESS_PLATFORM` and
+   `EGRESS_PLATFORM_CALLERS` as `env.example` sets them.
+2. **Write** the descriptor — plain JSON, it holds no secret.
+3. **Prove** with a real call: compute's `GET /v1/machines` lists the account's
+   machines (`DescribeInstances`), and a `dryRun` launch quotes.
+4. **Cut** — set `egressAddress` and `egressAudience` on compute. It signs in to
+   IAM as itself for the token egress checks; with no IAM identity it refuses
+   to start.
+5. **Delete** every cloud key compute used to read — `DIGITALOCEAN_ACCESS_TOKEN`
+   from the KMS path `hanzo/prod/visor-config` FIRST, then from the
+   `KMSSecret`'s list, since the sync rewrites the Secret within 600 seconds —
+   and **rotate** each, because every value that sat in a pod's environment or a
+   provider row is exposed.
 
 **Measured, and it is the same shape on the model plane.** Nine Secrets across
 three namespaces hold vendor LLM keys directly — `enso/enso-secrets`,

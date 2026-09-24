@@ -1022,7 +1022,7 @@ func TestTheCallerCheckCoversCallsAndSessions(t *testing.T) {
 }
 
 // CloudWatch is signed for as `monitoring`, the service its host names, with the
-// platform role's credentials: the metrics hosted compute meters transfer by.
+// platform role's credentials: the NetworkOut hosted compute stops machines on.
 func TestCloudWatchIsSignedForAsMonitoring(t *testing.T) {
 	st := newStore(map[string]string{accountRef(hostedLabel): roleDescriptor})
 	s, key, f, logs := awsServing(t, st)

@@ -81,7 +81,7 @@ var endpointForm = regexp.MustCompile(`^([a-z][a-z0-9]*)\.([a-z]{2}(?:-[a-z]+)+-
 // than its caller needs.
 var signable = map[string]bool{
 	"ec2": true,
-	// CloudWatch, for the metrics hosted compute meters by: GetMetricData
+	// CloudWatch, for the NetworkOut hosted compute stops machines on: GetMetricData
 	// answers with datapoints.
 	"monitoring": true,
 }
