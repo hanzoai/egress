@@ -2,6 +2,8 @@ package egress
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -68,6 +70,17 @@ type Principal struct {
 // who names one principal for a ceiling: the three fields that distinguish it,
 // and nothing a caller writes.
 func (p Principal) who() string { return p.Org + "/" + p.Kind + "/" + p.Name }
+
+// redacted names one principal for an audit record: the custody namespace and a
+// deterministic SHA-256 digest prefix of the principal identifier, so every
+// permitted or denied call is attributable without logging raw subjects or tokens.
+func (p Principal) redacted() string {
+	if p.Kind == "" || p.Name == "" {
+		return "anonymous"
+	}
+	sum := sha256.Sum256([]byte(p.Name))
+	return p.Kind + "/" + hex.EncodeToString(sum[:6])
+}
 
 // The two custody namespaces. They are constants rather than anything derived
 // because a namespace a token could name is not a boundary.
@@ -243,4 +256,21 @@ func with(ctx context.Context, p Principal) context.Context {
 func principalOf(ctx context.Context) (Principal, bool) {
 	p, ok := ctx.Value(principalKey{}).(Principal)
 	return p, ok && p.Org != "" && p.Kind != "" && p.Name != ""
+}
+
+// runKey addresses the run or request correlation identifier on a request context.
+type runKey struct{}
+
+// withRun attaches a run correlation identifier to ctx for per-run audit logging.
+func withRun(ctx context.Context, run string) context.Context {
+	if run == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, runKey{}, clip(run))
+}
+
+// runOf recovers the run correlation identifier from ctx.
+func runOf(ctx context.Context) string {
+	run, _ := ctx.Value(runKey{}).(string)
+	return run
 }

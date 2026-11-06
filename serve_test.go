@@ -297,3 +297,31 @@ func TestACallGivenUpOnDoesNotInterleaveWithItsOwnRefusal(t *testing.T) {
 	// Give the abandoned goroutine time to try to write into the sealed stream.
 	time.Sleep(300 * time.Millisecond)
 }
+
+// TestTheInFlightCallCeilingBoundsAbandonedGoroutines pins §9: when all
+// in-flight slots are occupied by active or abandoned dialect goroutines, the
+// next call is refused before custody is read, and freeing a slot admits the
+// next call again.
+func TestTheInFlightCallCeilingBoundsAbandonedGoroutines(t *testing.T) {
+	st := newStore(map[string]string{orgRef(alice, "dummy", "default"): "sk-ours"})
+	s, key := serving(t, st, 100)
+	s.calls = make(chan struct{}, 1)
+	s.calls <- struct{}{}
+
+	code, body := ask(t, s, http.MethodPost, "/v1/call", token(t, key, nil), call())
+	if code != http.StatusOK {
+		t.Fatalf("code = %d, body %s", code, body)
+	}
+	if !strings.Contains(body, "too many calls in flight") {
+		t.Fatalf("saturated ceiling did not refuse: %s", body)
+	}
+	if st.count() != 0 {
+		t.Errorf("custody was read %d times while the in-flight ceiling was full", st.count())
+	}
+
+	<-s.calls
+	_, body = ask(t, s, http.MethodPost, "/v1/call", token(t, key, nil), call())
+	if !strings.Contains(body, "event: meter") {
+		t.Fatalf("call did not succeed after a slot freed: %s", body)
+	}
+}

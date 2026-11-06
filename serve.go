@@ -33,6 +33,17 @@ type Server struct {
 	// lasts as long as the caller keeps it — so unlike a call it needs a
 	// ceiling on how many exist, not only on how fast they arrive.
 	room chan struct{}
+	// calls bounds how many dialect goroutines — active or abandoned past their
+	// deadline — this replica holds at once, so a slow upstream cannot
+	// accumulate unbounded goroutines retaining resolved credentials.
+	calls chan struct{}
+	// flights scopes concurrent in-flight broker calls by organization and
+	// workload alongside the replica-wide ceiling, so one tenant or runaway
+	// agent cannot exhaust all broker capacity.
+	flights *flights
+	// sessionFlights scopes concurrent brokered database sessions by
+	// organization and workload alongside the replica-wide room ceiling.
+	sessionFlights *flights
 	// lookup resolves the host of a database that is not ours, and returns only
 	// addresses this host would reach over the public internet. It is a field
 	// for the reason the verifier's key fetch is one: a test supplies its own
@@ -56,8 +67,11 @@ func New(cfg Config, store Secrets, log *slog.Logger) (*Server, error) {
 		limiter:  &limiter{rpm: cfg.RPM, seen: map[string]*window{}},
 		circuits: circuits{by: map[string]*middleware.Breaker{}},
 		log:      log,
-		room:     make(chan struct{}, room),
-		lookup:   reachable,
+		room:           make(chan struct{}, room),
+		calls:          make(chan struct{}, inflight),
+		flights:        newFlights(inflight, inflightOrg, inflightWho),
+		sessionFlights: newFlights(room, roomOrg, roomWho),
+		lookup:         reachable,
 	}
 	// The dialects make their provider call through one client hanzoai/ai
 	// keeps as a package variable, and it holds nothing until a process puts
@@ -143,11 +157,18 @@ func (s *Server) App() *zip.App { return s.app }
 // anything reads a credential, because an unidentifiable caller has no tenant
 // to spend from and nobody to bill.
 func (s *Server) gate(c *zip.Ctx) error {
+	run := c.Header("X-Hanzo-Run-Id")
+	if run == "" {
+		run = c.Header("X-Request-ID")
+	}
 	p, err := s.verify.Verify(c.Context(), c.Header("Authorization"))
 	if err != nil {
+		s.log.Warn("refused",
+			"decision", "deny", "destination", c.Path(),
+			"run", clip(run), "principal", "anonymous", "error", "not identified")
 		return zip.ErrUnauthorized("not identified")
 	}
-	c.SetContext(with(c.Context(), p))
+	c.SetContext(withRun(with(c.Context(), p), run))
 	return c.Next()
 }
 
@@ -160,6 +181,10 @@ func (s *Server) limit(c *zip.Ctx) error {
 		return zip.ErrUnauthorized("not identified")
 	}
 	if !s.limiter.admit(p.who()) {
+		s.log.Warn("refused",
+			"decision", "deny", "org", p.Org, "kind", p.Kind,
+			"principal", p.redacted(), "run", runOf(c.Context()),
+			"destination", c.Path(), "error", "too many calls")
 		return zip.Errorf(http.StatusTooManyRequests, "too many calls")
 	}
 	return c.Next()
@@ -178,6 +203,10 @@ func (s *Server) call(c *zip.Ctx) error {
 	}
 	var in Call
 	if err := json.Unmarshal(c.Body(), &in); err != nil {
+		s.log.Warn("refused",
+			"decision", "deny", "org", p.Org, "kind", p.Kind,
+			"principal", p.redacted(), "run", runOf(c.Context()),
+			"destination", "/v1/call", "error", "body is not a call")
 		return zip.ErrBadRequest("body is not a call")
 	}
 
@@ -186,18 +215,22 @@ func (s *Server) call(c *zip.Ctx) error {
 
 	// Everything the stream needs is captured here, by value. The callback runs
 	// after this handler returns, so it must not reach back into the request.
+	runID := runOf(c.Context())
+	dest := s.callDestination(in.Provider)
 	return c.SendStreamWriter(func(w *bufio.Writer) {
 		out := &frames{to: w}
-		meter, err := s.spend(context.Background(), p, &in, out)
+		meter, err := s.spend(withRun(context.Background(), runID), p, &in, out)
 		if err != nil {
 			s.log.Warn("refused",
-				"org", p.Org, "name", p.Name, "kind", p.Kind,
+				"decision", "deny", "destination", dest, "run", runID,
+				"org", p.Org, "principal", p.redacted(), "kind", p.Kind,
 				"provider", in.Provider, "model", in.Model, "error", err.Error())
 			out.emit("error", map[string]string{"error": err.Error()})
 			return
 		}
 		s.log.Info("spend",
-			"org", p.Org, "name", p.Name, "kind", p.Kind,
+			"decision", "allow", "destination", dest, "run", runID,
+			"org", p.Org, "principal", p.redacted(), "kind", p.Kind,
 			"provider", meter.Provider, "model", meter.Model, "scope", meter.Scope,
 			"prompt", meter.Prompt, "completion", meter.Completion, "total", meter.Total,
 			"price", meter.Price, "currency", meter.Currency, "millis", meter.Millis)
@@ -232,8 +265,12 @@ func (s *Server) enroll(ctx context.Context, in *Enroll) (*Enrolled, error) {
 	if !ok {
 		return nil, zip.ErrUnauthorized("not identified")
 	}
+	runID := runOf(ctx)
 	provider, ok := slug(in.Provider)
 	if !ok {
+		s.log.Warn("refused",
+			"decision", "deny", "destination", "kms:enroll", "run", runID,
+			"org", p.Org, "principal", p.redacted(), "kind", p.Kind, "error", "unknown provider")
 		return nil, zip.ErrBadRequest("unknown provider")
 	}
 	label := in.Label
@@ -241,16 +278,27 @@ func (s *Server) enroll(ctx context.Context, in *Enroll) (*Enrolled, error) {
 		label = "default"
 	}
 	if !segment(label) {
+		s.log.Warn("refused",
+			"decision", "deny", "destination", "kms:"+provider, "run", runID,
+			"org", p.Org, "principal", p.redacted(), "kind", p.Kind, "error", "label is not a name")
 		return nil, zip.ErrBadRequest("label is not a name")
 	}
+	dest := "kms:" + provider + "/" + label
 	if in.Key == "" {
+		s.log.Warn("refused",
+			"decision", "deny", "destination", dest, "run", runID,
+			"org", p.Org, "principal", p.redacted(), "kind", p.Kind, "error", "key is empty")
 		return nil, zip.ErrBadRequest("key is empty")
 	}
 	if err := s.custody.enroll(ctx, p, provider, label, in.Key); err != nil {
-		s.log.Warn("enroll failed", "org", p.Org, "name", p.Name, "kind", p.Kind, "provider", provider)
+		s.log.Warn("enroll failed",
+			"decision", "deny", "destination", dest, "run", runID,
+			"org", p.Org, "principal", p.redacted(), "kind", p.Kind, "provider", provider)
 		return nil, zip.ErrInternal("could not seal the key")
 	}
-	s.log.Info("enrolled", "org", p.Org, "name", p.Name, "kind", p.Kind, "provider", provider, "label", label)
+	s.log.Info("enrolled",
+		"decision", "allow", "destination", dest, "run", runID,
+		"org", p.Org, "principal", p.redacted(), "kind", p.Kind, "provider", provider, "label", label)
 	return &Enrolled{Provider: in.Provider, Label: label, Scope: ScopeUser}, nil
 }
 
@@ -322,4 +370,68 @@ func (l *limiter) sweep(now time.Time) {
 			delete(l.seen, key)
 		}
 	}
+}
+
+// flights bounds concurrent in-flight operations across three tiers:
+//  1. total replica capacity
+//  2. per-organization capacity (so one noisy or malicious tenant cannot starve others)
+//  3. per-workload/principal capacity (so one runaway agent cannot starve its org)
+type flights struct {
+	total  int
+	perOrg int
+	perWho int
+
+	mu     sync.Mutex
+	active int
+	byOrg  map[string]int
+	byWho  map[string]int
+}
+
+func newFlights(total, perOrg, perWho int) *flights {
+	return &flights{
+		total:  total,
+		perOrg: perOrg,
+		perWho: perWho,
+		byOrg:  map[string]int{},
+		byWho:  map[string]int{},
+	}
+}
+
+// acquire reserves one in-flight slot across all three tiers and returns an
+// idempotent release function.
+func (f *flights) acquire(p Principal) (func(), bool) {
+	if f == nil {
+		return func() {}, true
+	}
+	who := p.who()
+	f.mu.Lock()
+	if (f.total > 0 && f.active >= f.total) ||
+		(f.perOrg > 0 && f.byOrg[p.Org] >= f.perOrg) ||
+		(f.perWho > 0 && f.byWho[who] >= f.perWho) {
+		f.mu.Unlock()
+		return nil, false
+	}
+	f.active++
+	f.byOrg[p.Org]++
+	f.byWho[who]++
+	f.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			f.mu.Lock()
+			f.active--
+			if f.byOrg[p.Org] <= 1 {
+				delete(f.byOrg, p.Org)
+			} else {
+				f.byOrg[p.Org]--
+			}
+			if f.byWho[who] <= 1 {
+				delete(f.byWho, who)
+			} else {
+				f.byWho[who]--
+			}
+			f.mu.Unlock()
+		})
+	}, true
 }

@@ -68,7 +68,13 @@ var bases = map[string]string{
 // connection at each end and a goroutine in between, and the far ends have
 // ceilings of their own — so this one is stated rather than discovered when a
 // database starts refusing. Past it a client is told what postgres tells one.
-const room = 1024
+// roomOrg and roomWho scope authenticated sessions by organization and workload
+// so one tenant cannot consume all session slots.
+const (
+	room    = 1024
+	roomOrg = 128
+	roomWho = 32
+)
 
 // greeting is how long a client has to say who it is. Until it has, it is
 // nobody's to bill and nothing has been decided about it, so it does not get to
@@ -103,13 +109,14 @@ func (s *Server) origin(ctx context.Context, p Principal, name string) (string, 
 }
 
 // session is one brokered connection: who opened it, to what, and on whose
-// authority. Every protocol fills the same four fields, which is what makes the
+// authority. Every protocol fills the same fields, which is what makes the
 // record the same line whichever one was spoken.
 type session struct {
-	p        Principal
-	base     string // the name the caller asked for
-	scope    string // which custody paid, or ScopeTrust for a base of ours
-	database string // the database within it
+	p           Principal
+	base        string // the name the caller asked for
+	scope       string // which custody paid, or ScopeTrust for a base of ours
+	database    string // the database within it
+	destination string // redacted host:port or socket destination for audit logs
 }
 
 // opened records the authorization. It is written when the session starts
@@ -117,14 +124,16 @@ type session struct {
 // question "who is connected to that" has to be answerable while it still is.
 func (s *Server) opened(in session) {
 	s.log.Info("session",
-		"org", in.p.Org, "name", in.p.Name, "kind", in.p.Kind,
+		"decision", "allow", "destination", clip(in.destination),
+		"org", in.p.Org, "principal", in.p.redacted(), "kind", in.p.Kind,
 		"base", clip(in.base), "scope", in.scope, "database", clip(in.database))
 }
 
 // closed records the spend: how long the session held and how much crossed it.
 func (s *Server) closed(in session, started time.Time, from, to int64) {
 	s.log.Info("spend",
-		"org", in.p.Org, "name", in.p.Name, "kind", in.p.Kind,
+		"decision", "allow", "destination", clip(in.destination),
+		"org", in.p.Org, "principal", in.p.redacted(), "kind", in.p.Kind,
 		"base", clip(in.base), "scope", in.scope, "database", clip(in.database),
 		"millis", time.Since(started).Milliseconds(), "read", from, "wrote", to)
 }
@@ -133,8 +142,13 @@ func (s *Server) closed(in session, started time.Time, from, to int64) {
 // the reason the client was given. What went wrong is in the error; who wanted
 // it is what makes the line worth keeping.
 func (s *Server) refused(in session, err error) {
+	dest := in.destination
+	if dest == "" {
+		dest = in.base
+	}
 	s.log.Warn("refused",
-		"org", in.p.Org, "name", in.p.Name, "kind", in.p.Kind,
+		"decision", "deny", "destination", clip(dest),
+		"org", in.p.Org, "principal", in.p.redacted(), "kind", in.p.Kind,
 		"base", clip(in.base), "database", clip(in.database), "error", err.Error())
 }
 

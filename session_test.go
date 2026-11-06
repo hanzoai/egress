@@ -495,8 +495,10 @@ func TestAnOriginThatIsNotOursCannotNameThisHost(t *testing.T) {
 func TestNearIsWhatThisHostCanReachOnlyBecauseOfWhereItSits(t *testing.T) {
 	for _, at := range []string{
 		"127.0.0.1", "::1", "10.0.0.1", "172.16.0.1", "192.168.1.1",
-		"169.254.169.254", "100.64.0.1", "100.127.255.255", "0.0.0.0",
-		"224.0.0.1", "fe80::1", "fd00::1", "ff02::1",
+		"169.254.169.254", "100.64.0.1", "100.100.100.200", "100.127.255.255", "0.0.0.0",
+		"192.0.0.192", "198.18.0.1", "224.0.0.1", "240.0.0.1", "255.255.255.255",
+		"fe80::1", "fd00::1", "fd00:ec2::254", "ff02::1",
+		"64:ff9b::a9fe:a9fe", "64:ff9b:1::a9fe:a9fe", "2002:a9fe:a9fe::1", "2001::1", "2001:db8::1",
 	} {
 		if !near(net.ParseIP(at)) {
 			t.Errorf("near(%s) = false — a sealed origin could name it", at)

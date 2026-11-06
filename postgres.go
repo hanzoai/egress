@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -121,15 +123,32 @@ func (s *Server) postgres(c net.Conn) {
 	// thing a caller may present.
 	p, err := s.verify.Verify(ctx, "Bearer "+token)
 	if err != nil {
+		s.log.Warn("refused",
+			"decision", "deny", "destination", clip(start.Parameters["user"]),
+			"principal", "anonymous", "database", clip(start.Parameters["database"]),
+			"error", "not identified")
 		refuse(c, "28000", "not identified")
 		return
 	}
+	in := session{
+		p:           p,
+		base:        start.Parameters["user"],
+		database:    start.Parameters["database"],
+		destination: start.Parameters["user"],
+	}
 	if !s.limiter.admit(p.who()) {
+		s.refused(in, errors.New("egress: too many sessions"))
 		refuse(c, "53400", "too many sessions")
 		return
 	}
+	releaseSession, ok := s.sessionFlights.acquire(p)
+	if !ok {
+		s.refused(in, errors.New("egress: too many sessions in flight"))
+		refuse(c, "53300", "too many connections")
+		return
+	}
+	defer releaseSession()
 
-	in := session{p: p, base: start.Parameters["user"], database: start.Parameters["database"]}
 	at, scope, err := s.origin(ctx, p, in.base)
 	if err != nil {
 		s.refused(in, err)
@@ -137,6 +156,7 @@ func (s *Server) postgres(c net.Conn) {
 		return
 	}
 	in.scope = scope
+	in.destination = sessionDestination(at, scope, in.base)
 
 	up, err := s.connect(ctx, at, in, start.Parameters)
 	if err != nil {
@@ -159,6 +179,18 @@ func (s *Server) postgres(c net.Conn) {
 	started := time.Now()
 	from, to := relay(c, up.Conn)
 	s.closed(in, started, from, to)
+}
+
+// sessionDestination extracts the safe host:port or socket destination for an
+// audit record without ever including user/password credentials from a sealed URL.
+func sessionDestination(at, scope, base string) string {
+	if scope == ScopeTrust {
+		return at
+	}
+	if u, err := url.Parse(at); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return base
 }
 
 // hello reads the client's startup, answering what a client asks before it.
@@ -398,17 +430,63 @@ func reachable(ctx context.Context, host string) ([]string, error) {
 	return out, nil
 }
 
+// special4 is the IANA IPv4 Special-Purpose Address Registry (RFC 6890 and its
+// updates), plus multicast.
+var special4 = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),       // "this network" (RFC 791)
+	netip.MustParsePrefix("10.0.0.0/8"),      // private-use (RFC 1918)
+	netip.MustParsePrefix("100.64.0.0/10"),   // shared address space, CGNAT (RFC 6598); Alibaba metadata 100.100.100.200
+	netip.MustParsePrefix("127.0.0.0/8"),     // loopback (RFC 1122)
+	netip.MustParsePrefix("169.254.0.0/16"),  // link-local (RFC 3927); the metadata endpoint 169.254.169.254
+	netip.MustParsePrefix("172.16.0.0/12"),   // private-use (RFC 1918)
+	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments (RFC 6890); Oracle metadata 192.0.0.192
+	netip.MustParsePrefix("192.0.2.0/24"),    // documentation, TEST-NET-1 (RFC 5737)
+	netip.MustParsePrefix("192.31.196.0/24"), // AS112-v4 (RFC 7535)
+	netip.MustParsePrefix("192.52.193.0/24"), // AMT (RFC 7450)
+	netip.MustParsePrefix("192.88.99.0/24"),  // deprecated 6to4 relay anycast (RFC 7526)
+	netip.MustParsePrefix("192.168.0.0/16"),  // private-use (RFC 1918)
+	netip.MustParsePrefix("192.175.48.0/24"), // direct delegation AS112 (RFC 7534)
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking (RFC 2544)
+	netip.MustParsePrefix("198.51.100.0/24"), // documentation, TEST-NET-2 (RFC 5737)
+	netip.MustParsePrefix("203.0.113.0/24"),  // documentation, TEST-NET-3 (RFC 5737)
+	netip.MustParsePrefix("224.0.0.0/4"),     // multicast (RFC 5771)
+	netip.MustParsePrefix("240.0.0.0/4"),     // reserved (RFC 1112), with 255.255.255.255 limited broadcast (RFC 919)
+}
+
+// unicast6 is the block IANA allocates IPv6 global unicast from (RFC 4291 §2.4).
+// Nothing outside it is public, which refuses ::, ::1, IPv4-compatible ::/96,
+// NAT64 64:ff9b::/96 and 64:ff9b:1::/48, discard 100::/64, 5f00::/16,
+// fc00::/7, fe80::/10, fec0::/10 and ff00::/8 without listing them.
+var unicast6 = netip.MustParsePrefix("2000::/3")
+
+// special6 is the IANA IPv6 Special-Purpose Address Registry inside 2000::/3.
+var special6 = []netip.Prefix{
+	netip.MustParsePrefix("2001::/23"),         // IETF protocol assignments (RFC 2928): Teredo 2001::/32, anycast, benchmarking, AMT, AS112, ORCHID
+	netip.MustParsePrefix("2001:db8::/32"),     // documentation (RFC 3849)
+	netip.MustParsePrefix("2002::/16"),         // 6to4 (RFC 3056), deprecated (RFC 7526)
+	netip.MustParsePrefix("2620:4f:8000::/48"), // direct delegation AS112 (RFC 7534)
+	netip.MustParsePrefix("3fff::/20"),         // documentation (RFC 9637)
+}
+
 // near reports whether an address is one this host can reach only because of
-// where it sits — its own loopback, its own network, the link, or the block
-// carriers and mesh networks hand out, which is private in every way that
-// matters here and is not what IsPrivate answers.
+// where it sits — its own loopback, its own network, the link, CGNAT, or any
+// prefix in the IANA IPv4 and IPv6 special-purpose registries (including NAT64
+// 64:ff9b::/96, 6to4 2002::/16, Teredo 2001::/32, and cloud metadata blocks).
 func near(ip net.IP) bool {
-	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+	a, ok := netip.AddrFromSlice(ip)
+	if !ok {
 		return true
 	}
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
-		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast() || ip.IsInterfaceLocalMulticast()
+	a = a.Unmap()
+	switch {
+	case !a.IsValid() || a.Zone() != "":
+		return true
+	case a.Is4():
+		return slices.ContainsFunc(special4, func(p netip.Prefix) bool { return p.Contains(a) })
+	case !unicast6.Contains(a):
+		return true
+	}
+	return slices.ContainsFunc(special6, func(p netip.Prefix) bool { return p.Contains(a) })
 }
 
 // take reads exactly one message and not a byte more. A startup packet carries

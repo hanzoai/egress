@@ -80,6 +80,69 @@ type Meter struct {
 // ErrUnknownProvider is what a provider hanzoai/ai has no dialect for gets.
 var ErrUnknownProvider = errors.New("egress: unknown provider")
 
+// inflight is how many dialect goroutines one replica will hold at once,
+// including calls abandoned at their deadline that have not yet returned from
+// the vendor client. A dialect takes no context, so a hung vendor leaves its
+// goroutine — and the credential inside the dialect struct — alive until the
+// transport times out. Bounding how many exist at once — globally, per
+// organization, and per workload — bounds how many credentials can sit in
+// abandoned goroutines and prevents one tenant from exhausting all broker capacity.
+const (
+	inflight    = 512
+	inflightOrg = 64
+	inflightWho = 16
+)
+
+// defaultDestinations maps each dialect slug to its canonical upstream host for
+// audit logging when no deployment URL override is set.
+var defaultDestinations = map[string]string{
+	"openai":       "api.openai.com",
+	"openrouter":   "openrouter.ai",
+	"claude":       "api.anthropic.com",
+	"fireworks":    "api.fireworks.ai",
+	"digitalocean": "inference.do-ai.run",
+}
+
+// callDestination names the upstream destination host for an audit record.
+func (s *Server) callDestination(rawProvider string) string {
+	provider, ok := slug(rawProvider)
+	if !ok {
+		return clip(rawProvider)
+	}
+	if override := s.cfg.URLs[provider]; override != "" {
+		if u, err := url.Parse(override); err == nil && u.Host != "" {
+			return u.Host
+		}
+		return clip(override)
+	}
+	if host, ok := defaultDestinations[provider]; ok {
+		return host
+	}
+	return provider
+}
+
+// acquireCall reserves one in-flight call slot across the replica channel and
+// the per-org/per-workload flight table.
+func (s *Server) acquireCall(p Principal) (func(), bool) {
+	select {
+	case s.calls <- struct{}{}:
+	default:
+		return nil, false
+	}
+	releaseFlight, ok := s.flights.acquire(p)
+	if !ok {
+		<-s.calls
+		return nil, false
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			releaseFlight()
+			<-s.calls
+		})
+	}, true
+}
+
 // spend resolves the credential for this principal, makes the upstream call and
 // streams the answer to w as it arrives. The credential exists only inside this
 // function; it is not returned, not logged, and scrubbed out of anything that
@@ -97,14 +160,25 @@ func (s *Server) spend(ctx context.Context, p Principal, in *Call, w *frames) (M
 		return Meter{}, fmt.Errorf("egress: label %q is not a name", in.Label)
 	}
 
-	key, scope, err := s.custody.resolve(ctx, p, provider, label)
-	if err != nil {
-		return Meter{}, err
-	}
-
 	breaker := s.breaker(provider)
 	if !breaker.Allow() {
 		return Meter{}, fmt.Errorf("egress: %s is not answering", in.Provider)
+	}
+
+	release, ok := s.acquireCall(p)
+	if !ok {
+		return Meter{}, errors.New("egress: too many calls in flight")
+	}
+	held := true
+	defer func() {
+		if held {
+			release()
+		}
+	}()
+
+	key, scope, err := s.custody.resolve(ctx, p, provider, label)
+	if err != nil {
+		return Meter{}, err
 	}
 
 	dialect, err := model.GetModelProvider(
@@ -124,7 +198,9 @@ func (s *Server) spend(ctx context.Context, p Principal, in *Call, w *frames) (M
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.Deadline)
 	defer cancel()
+	held = false
 	result, err := run(ctx, func() (*model.ModelResult, error) {
+		defer release()
 		return dialect.QueryText(in.Question, w, turns(in.History), in.Prompt, nil, nil, language(in.Lang))
 	})
 	breaker.Report(err, 0)

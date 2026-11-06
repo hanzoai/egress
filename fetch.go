@@ -78,10 +78,18 @@ func (s *Server) fetch(ctx context.Context, in *spend.Fetch) (*spend.Fetched, er
 	if !ok {
 		return nil, zip.ErrUnauthorized("not identified")
 	}
+	runID := runOf(ctx)
+	deny := func(dest string, code error, reason string) (*spend.Fetched, error) {
+		s.log.Warn("refused",
+			"decision", "deny", "destination", dest, "run", runID,
+			"org", p.Org, "principal", p.redacted(), "kind", p.Kind,
+			"provider", in.Provider, "method", in.Method, "path", clip(in.Path), "error", reason)
+		return nil, code
+	}
 
 	provider, ok := slug(in.Provider)
 	if !ok {
-		return nil, zip.ErrBadRequest("unknown provider")
+		return deny(clip(in.Provider), zip.ErrBadRequest("unknown provider"), "unknown provider")
 	}
 
 	label := in.Label
@@ -89,45 +97,56 @@ func (s *Server) fetch(ctx context.Context, in *spend.Fetch) (*spend.Fetched, er
 		label = "default"
 	}
 	if !segment(label) {
-		return nil, zip.ErrBadRequest("label is not a name")
+		return deny(provider, zip.ErrBadRequest("label is not a name"), "label is not a name")
 	}
 	method := strings.ToUpper(strings.TrimSpace(in.Method))
 	if !verbs[method] {
-		return nil, zip.ErrBadRequest("method is not one a cloud API uses")
+		return deny(provider, zip.ErrBadRequest("method is not one a cloud API uses"), "method is not one a cloud API uses")
 	}
 	api, ok := s.upstream(clouds, provider)
 	if !ok {
-		return nil, zip.ErrBadRequest(ErrNotCarried.Error())
+		return deny(provider, zip.ErrBadRequest(ErrNotCarried.Error()), ErrNotCarried.Error())
+	}
+	dest := api
+	if u, err := url.Parse(api); err == nil && u.Host != "" {
+		dest = u.Host
 	}
 	target, err := reference(api, in.Path)
 	if err != nil {
-		return nil, zip.ErrBadRequest(err.Error())
-	}
-
-	key, scope, err := s.custody.resolve(ctx, p, provider, label)
-	if err != nil {
-		return nil, err
+		return deny(dest, zip.ErrBadRequest(err.Error()), err.Error())
 	}
 
 	breaker := s.breaker(provider)
 	if !breaker.Allow() {
-		return nil, fmt.Errorf("egress: %s is not answering", in.Provider)
+		err := fmt.Errorf("egress: %s is not answering", in.Provider)
+		return deny(dest, err, err.Error())
+	}
+
+	release, ok := s.acquireCall(p)
+	if !ok {
+		err := zip.Errorf(http.StatusTooManyRequests, "egress: too many calls in flight")
+		return deny(dest, err, "egress: too many calls in flight")
+	}
+	defer release()
+
+	key, scope, err := s.custody.resolve(ctx, p, provider, label)
+	if err != nil {
+		return deny(dest, err, err.Error())
 	}
 
 	started := time.Now()
 	out, err := s.send(ctx, method, target, key, in.Body)
 	breaker.Report(err, 0)
 	if err != nil {
-		s.log.Warn("refused",
-			"org", p.Org, "name", p.Name, "kind", p.Kind, "provider", in.Provider,
-			"method", method, "path", in.Path, "error", scrub(err, key).Error())
-		return nil, scrub(err, key)
+		clean := scrub(err, key)
+		return deny(dest, clean, clean.Error())
 	}
 
 	out.Scope = scope
 	out.Millis = time.Since(started).Milliseconds()
 	s.log.Info("spend",
-		"org", p.Org, "name", p.Name, "kind", p.Kind, "provider", in.Provider, "scope", scope,
+		"decision", "allow", "destination", dest, "run", runID,
+		"org", p.Org, "principal", p.redacted(), "kind", p.Kind, "provider", in.Provider, "scope", scope,
 		"method", method, "path", in.Path, "status", out.Status, "millis", out.Millis)
 	return out, nil
 }

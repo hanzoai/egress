@@ -563,13 +563,15 @@ breaks a customer's read while their key and the shared one are both present and
 resolvable, and fails on the old behaviour with *a store fault served a call:
 resolved org custody*.
 
-**Abandoned calls retain the credential.** The dialects take no context, so a
-call past its deadline is left running rather than stopped — correctly, and its
-output is sealed off so it cannot interleave with the refusal. But the goroutine
-survives until the vendor client gives up, holding the dialect and therefore the
-credential. Under a vendor hang with sustained traffic that is unbounded
-goroutine growth, each one retaining a copy. Bound the number in flight, and push
-for context-taking dialects upstream in `ai`, which is the real fix.
+**Abandoned calls retain the credential — bounded.** The dialects take no
+context, so a call past its deadline is left running rather than stopped —
+correctly, and its output is sealed off so it cannot interleave with the
+refusal. The goroutine survives until the vendor client gives up, holding the
+dialect and therefore the credential. `s.calls` (`const inflight = 512`) bounds
+how many dialect goroutines — active or abandoned — may exist at once on a
+replica, acquiring the slot before custody is read and releasing it only when
+the dialect goroutine itself exits. Context-taking dialects upstream in `ai`
+remain the complete fix.
 
 **The store is not authenticated to egress.** A request is answered only by the
 peer it was addressed to, so nothing can collect a credential in transit. The
