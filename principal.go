@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -101,7 +102,7 @@ var ErrAnonymous = errors.New("egress: caller is not identified")
 // verifies against the issuer's published keys — egress checks IAM's signature,
 // it never mints or holds an identity of its own.
 type Verifier struct {
-	issuer   string
+	issuers  []string
 	audience string
 	ttl      time.Duration
 
@@ -118,7 +119,7 @@ type Verifier struct {
 // and holds it for ttl.
 func NewVerifier(issuer, audience, jwksURL string, ttl time.Duration) *Verifier {
 	return &Verifier{
-		issuer:   issuer,
+		issuers:  trustedIssuers(issuer),
 		audience: audience,
 		ttl:      ttl,
 		fetch:    func(ctx context.Context) ([]byte, error) { return get(ctx, jwksURL) },
@@ -138,15 +139,37 @@ func (v *Verifier) Verify(ctx context.Context, authorization string) (Principal,
 	if err != nil {
 		return Principal{}, fmt.Errorf("%w: keys unavailable", ErrAnonymous)
 	}
-	claims, err := jwt.ParseJWKS(raw, keys,
-		jwt.WithIssuer(v.issuer),
-		jwt.WithAudience(v.audience),
-		jwt.WithExpiryRequired(),
-	)
-	if err != nil || claims == nil {
+	// Each trusted issuer is asked in turn, exactly: the library compares `iss` to the one it is given.
+	var claims *jwt.Claims
+	for _, iss := range v.issuers {
+		c, err := jwt.ParseJWKS(raw, keys,
+			jwt.WithIssuer(iss),
+			jwt.WithAudience(v.audience),
+			jwt.WithExpiryRequired(),
+		)
+		if err == nil && c != nil {
+			claims = c
+			break
+		}
+	}
+	if claims == nil {
 		return Principal{}, ErrAnonymous
 	}
 	return identify(claims)
+}
+
+// platformIssuers are the two spellings of the platform's issuer while it moves from
+// hanzo.id to hanzo.ai.
+var platformIssuers = []string{"https://hanzo.id", "https://hanzo.ai"}
+
+// trustedIssuers is every issuer a token may name: the configured one and, when that is the
+// platform's, its other spelling, each matched exactly. An organization's own issuer
+// (https://hanzo.ai/<org>) is never the platform's.
+func trustedIssuers(configured string) []string {
+	if slices.Contains(platformIssuers, configured) {
+		return slices.Clone(platformIssuers)
+	}
+	return []string{configured}
 }
 
 // identify reads the verified claims into the identity a call spends under.
